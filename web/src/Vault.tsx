@@ -37,8 +37,7 @@ export function Vault({ reward, burn, floor, pulse }: { reward: number; burn: nu
 
     function liquid(x0: number, x1: number, top: number, h: number, level: number, t: number, colors: [string, string, string], amp: number) {
       if (level < 0.002) return top + h;
-      if (level < 0.002) return top + h;
-    const y = top + h * (1 - level);
+      const y = top + h * (1 - level);
       for (let layer = 0; layer < 2; layer++) {
         ctx.beginPath();
         ctx.moveTo(x0, top + h);
