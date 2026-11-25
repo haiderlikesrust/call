@@ -1,0 +1,333 @@
+// The whole life of a callout: seen -> maturing -> ready (queued) -> sending -> paid.
+import { EventEmitter } from 'node:events';
+import { type Mode, type Rules } from './config.ts';
+import type { Chain, Outcome } from './chain.ts';
+import type { Row, Source } from './pumpApi.ts';
+import { drain, eligibility, reconcile, score, toUnits } from './rewards.ts';
+import { type Burn, type Callout, type Store, hash } from './store.ts';
+
+const HOUR = 3_600_000;
+const MAX_AGE = 24 * HOUR;
+const BATCH = 5;
+const MAX_ATTEMPTS = 5;
+
+export interface EngineOpts {
+  store: Store; source: Source; chain: Chain; rules: Rules; mode: Mode;
+  burnMode: 'buyback' | 'direct'; minBurn: number; exclude: Set<string>; start: () => number; now?: () => number;
+}
+
+export class Engine extends EventEmitter {
+  readonly store: Store;
+  readonly source: Source;
+  readonly chain: Chain;
+  readonly rules: Rules;
+  readonly mode: Mode;
+  readonly now: () => number;
+  /** Last problem per subsystem, shown on the site's status strip. */
+  readonly problems = new Map<string, string>();
+  private readonly o: EngineOpts;
+  private paying = false;
+  /** Set when the server is shutting down: finish the current step, start no new one. */
+  stopping = false;
+
+  constructor(o: EngineOpts) {
+    super();
+    this.o = o;
+    this.store = o.store;
+    this.source = o.source;
+    this.chain = o.chain;
+    this.rules = o.rules;
+    this.mode = o.mode;
+    this.now = o.now ?? Date.now;
+  }
+
+  private async guard<T>(name: string, fn: () => Promise<T>): Promise<T | undefined> {
+    try {
+      const out = await fn();
+      if (this.problems.delete(name)) this.emit('change');
+      return out;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (this.problems.get(name) !== msg) {
+        this.problems.set(name, msg);
+        console.error(`[${name}]`, msg);
+        this.emit('change');
+      }
+      return undefined;
+    }
+  }
+
+  // ---------------------------------------------------------------- intake
+
+  /** Fast poll. Keeps paging only while whole pages are new, so a burst is never missed. */
+  async poll(maxPages = 5): Promise<void> {
+    await this.guard('callouts', async () => {
+      for (let n = 0; n < maxPages; n++) {
+        const { rows, hasMore } = await this.source.page(n);
+        const fresh = rows.filter((r) => !this.store.callout(hash(r.calloutId)));
+        await this.admitAll(fresh);
+        if (!hasMore || fresh.length < rows.length || rows.length === 0) break;
+      }
+    });
+  }
+  /** Slow sweep over more pages, in case the feed order ever hides a new callout. */
+  async sweep(pages = 6): Promise<void> {
+    await this.guard('sweep', async () => {
+      for (let n = 0; n < pages; n++) {
+        const { rows, hasMore } = await this.source.page(n);
+        await this.admitAll(rows.filter((r) => !this.store.callout(hash(r.calloutId))));
+        if (!hasMore) break;
+      }
+    });
+  }
+
+  /** One unreadable wallet must not hold up everyone behind it. It is retried on the next poll. */
+  private async admitAll(rows: Row[]): Promise<void> {
+    let failed: unknown = null;
+    for (const r of rows) if (!this.stopping) await this.admit(r).catch((e) => { failed = e; });
+    if (failed) throw failed;
+  }
+
+  async admit(r: Row): Promise<void> {
+    const now = this.now();
+    if (now - r.createdAt > MAX_AGE) return;
+    const [balance, supply] = await Promise.all([this.chain.holding(r.wallet), this.chain.supply()]);
+    const userHash = hash(r.userId);
+    const reason = eligibility(
+      { ...r, balance, supply },
+      { start: this.o.start(), now, excluded: this.o.exclude.has(r.wallet), lastRewardedAt: this.store.lastRewardedAt(r.wallet, userHash), hasOpen: this.store.hasOpen(r.wallet, userHash) },
+      this.rules,
+    );
+    this.store.insert({
+      id: hash(r.calloutId), callout_id: r.calloutId, wallet: r.wallet, user_hash: userHash,
+      created_at: r.createdAt, seen_at: now, status: reason ? 'rejected' : 'maturing', reason,
+      username: r.username || null, avatar: r.avatar, thesis: r.thesis || null, likes: r.likes, followers: r.followers, api_at: now,
+      min_balance: balance.toString(), supply: supply.toString(), score: reason ? 0 : score(balance, supply, r.followers, this.rules),
+    });
+    this.emit('callout', hash(r.calloutId));
+    this.emit('change');
+  }
+
+  // ---------------------------------------------------------------- maturing
+
+  private reject(c: Callout, reason: string): void {
+    this.store.patch(c.id, { status: 'rejected', reason, score: 0 });
+    this.emit('change');
+  }
+  private belowMin(balance: bigint, supply: bigint): boolean {
+    return balance <= 0n || balance * 1_000_000n < supply * BigInt(Math.round(this.rules.minHoldBps * 100));
+  }
+
+  /** Samples every maturing bag. The lowest balance seen is the one that counts. */
+  async mature(): Promise<void> {
+    await this.guard('holders', async () => {
+      const supply = await this.chain.supply();
+      let failed: unknown = null;
+      for (const c of this.store.byStatus('maturing')) if (!this.stopping) await this.matureOne(c, supply).catch((e) => { failed = e; });
+      if (failed) throw failed;
+    });
+  }
+
+  private async matureOne(c: Callout, supply: bigint): Promise<void> {
+    const bal = await this.chain.holding(c.wallet);
+    const low = bal < BigInt(c.min_balance) ? bal : BigInt(c.min_balance);
+    if (this.belowMin(low, supply)) return this.reject(c, 'sold');
+    if (low !== BigInt(c.min_balance)) this.store.patch(c.id, { min_balance: low.toString() });
+    if (this.now() - c.seen_at < this.rules.holdMinutes * 60_000) return;
+    if (c.callout_id && !(await this.source.exists(c.callout_id))) return this.reject(c, 'deleted');
+    const followers = (await this.source.followers(c.wallet)) ?? c.followers ?? 0;
+    if (followers < this.rules.minFollowers) return this.reject(c, 'low-followers');
+    this.store.patch(c.id, {
+      status: 'ready', ready_at: this.now(), followers, api_at: this.now(),
+      supply: supply.toString(), score: score(low, supply, followers, this.rules),
+    });
+    this.emit('change');
+  }
+
+  // ---------------------------------------------------------------- money
+
+  /** One pass: settle what is in flight, claim, reconcile, pay the queue, burn. Never overlaps itself. */
+  async payCycle(opts: { claim?: boolean } = {}): Promise<void> {
+    if (this.paying || this.stopping) return;
+    this.paying = true;
+    try {
+      await this.guard('payouts', async () => {
+        if (this.chain.canSign && !(await this.settleInFlight())) return;
+        if (this.stopping) return;
+        if (opts.claim && this.chain.canSign) await this.guard('fee claim', () => this.chain.claim());
+        await this.reconcile();
+        this.expire();
+        if (!this.chain.canSign) return;
+        if (this.stopping) return;
+        if (!(await this.chain.solOk())) throw new Error('treasury is low on SOL for network fees');
+        await this.payQueue();
+        await this.guard('burn', () => this.runBurns());
+      });
+    } finally {
+      this.paying = false;
+      this.emit('change');
+    }
+  }
+
+  /** Returns false while anything is still undecided, so the ledger is never read mid-flight. */
+  private async settleInFlight(): Promise<boolean> {
+    let clear = true;
+    for (const p of this.store.pendingPayouts()) {
+      const out = await this.chain.resolve(p.sig, p.last_valid);
+      if (out === 'pending') clear = false;
+      else this.finishPayout(p.id, out);
+    }
+    for (const b of this.store.openBurns()) {
+      if (b.status === 'swapped') continue;
+      const sig = b.status === 'swapping' ? b.swap_sig : b.burn_sig;
+      if (!sig) { this.store.patchBurn(b.id, { status: b.status === 'swapping' ? 'failed' : 'swapped' }); continue; }
+      const out = await this.chain.resolve(sig, b.last_valid);
+      if (out === 'pending') clear = false;
+      else if (b.status === 'swapping') await this.finishSwap(b, out);
+      else this.finishBurn(b, out);
+    }
+    return clear;
+  }
+
+  private async reconcile(): Promise<void> {
+    const onchain = await this.chain.treasuryBalance();
+    const pots = this.store.pots();
+    const r = reconcile(onchain, pots, this.rules);
+    if (r.intake === 0n) return;
+    this.store.tx(() => {
+      this.store.setPots({ reward: r.reward, burn: r.burn, due: pots.due });
+      this.store.addIntake(this.now(), r.intake, r.toReward, r.toBurn);
+    });
+  }
+
+  private expire(): void {
+    const cutoff = this.now() - this.rules.queueExpiryDays * 24 * HOUR;
+    for (const c of this.store.byStatus('ready')) if ((c.ready_at ?? 0) < cutoff) this.store.patch(c.id, { status: 'expired', reason: 'expired' });
+  }
+
+  private plan() {
+    const queue = this.store.byStatus('ready');
+    const pots = this.store.pots();
+    return drain(queue.map((c) => ({ id: c.id, score: c.score, readyAt: c.ready_at ?? c.seen_at })), { reward: pots.reward, burn: pots.burn - pots.due }, this.now(), this.rules);
+  }
+
+  private async payQueue(): Promise<void> {
+    // Re-check holders right before paying, then plan again with the fresh scores.
+    const supply = await this.chain.supply();
+    const checked = new Set<string>();
+    for (const p of this.plan().payments.slice(0, 40)) {
+      const c = this.store.callout(p.id)!;
+      const bal = await this.chain.holding(c.wallet);
+      const low = bal < BigInt(c.min_balance) ? bal : BigInt(c.min_balance);
+      if (this.belowMin(low, supply)) { this.reject(c, 'sold'); continue; }
+      const stale = c.followers === null;
+      const followers = stale ? await this.source.followers(c.wallet) : c.followers;
+      if (followers === null) { this.reject(c, 'no-profile'); continue; }
+      this.store.patch(c.id, {
+        min_balance: low.toString(), supply: supply.toString(), score: score(low, supply, followers, this.rules),
+        ...(stale ? { followers, api_at: this.now() } : {}),
+      });
+      checked.add(c.id);
+    }
+    const pay = this.plan().payments.filter((p) => checked.has(p.id));
+    const fresh = pay.filter((p) => this.store.callout(p.id)!.attempts === 0);
+    const retry = pay.filter((p) => this.store.callout(p.id)!.attempts > 0);
+    const groups = [];
+    for (let i = 0; i < fresh.length; i += BATCH) groups.push(fresh.slice(i, i + BATCH));
+    for (const g of [...groups, ...retry.map((p) => [p])]) if (this.stopping || !(await this.sendBatch(g))) break;
+  }
+
+  private async sendBatch(g: { id: string; amount: bigint; burn: bigint }[]): Promise<boolean> {
+    const items = g.map((p) => ({ ...p, wallet: this.store.callout(p.id)!.wallet }));
+    let payoutId = 0;
+    const out = await this.chain.pay(items, (sig, lastValid) => {
+      this.store.tx(() => {
+        payoutId = this.store.addPayout(sig, lastValid, items.reduce((n, i) => n + i.amount, 0n), this.now());
+        for (const i of items) this.store.patch(i.id, { status: 'sending', payout_id: payoutId, amount: i.amount.toString(), burn: i.burn.toString() });
+      });
+      this.emit('change');
+    });
+    if (out === 'pending') return false;
+    this.finishPayout(payoutId, out);
+    return true;
+  }
+
+  private finishPayout(id: number, out: Exclude<Outcome, 'pending'>): void {
+    const rows = this.store.byPayout(id);
+    this.store.tx(() => {
+      this.store.setPayout(id, out);
+      if (out === 'confirmed') {
+        const pots = this.store.pots();
+        let { reward, due } = pots;
+        for (const c of rows) {
+          reward -= BigInt(c.amount ?? '0');
+          due += BigInt(c.burn ?? '0');
+          this.store.patch(c.id, { status: 'paid', paid_at: this.now() });
+        }
+        this.store.setPots({ reward, burn: pots.burn, due });
+      } else {
+        for (const c of rows) {
+          const attempts = c.attempts + (out === 'failed' ? 1 : 0);
+          this.store.patch(c.id, attempts >= MAX_ATTEMPTS
+            ? { status: 'rejected', reason: 'payout-failed', attempts }
+            : { status: 'ready', payout_id: null, amount: null, burn: null, attempts });
+        }
+      }
+    });
+    if (out === 'confirmed') this.emit('paid', rows.map((c) => c.id));
+    this.emit('change');
+  }
+
+  // ---------------------------------------------------------------- burns
+
+  private async runBurns(): Promise<void> {
+    for (const b of this.store.openBurns()) if (b.status === 'swapped' && !this.stopping) await this.burnCoins(b);
+    if (this.stopping || this.store.openBurns().length) return;
+    const { due } = this.store.pots();
+    if (due < toUnits(this.o.minBurn)) return;
+    let id = 0;
+    if (this.o.burnMode === 'direct') {
+      const out = await this.chain.burn('pump', due, (sig, lastValid) => {
+        id = this.store.addBurn({ at: this.now(), kind: 'direct', status: 'burning', pump_in: due.toString(), burn_sig: sig, last_valid: lastValid });
+      });
+      if (out !== 'pending') this.finishBurn(this.store.openBurns().find((b) => b.id === id)!, out);
+      return;
+    }
+    const out = await this.chain.buyback(due, (sig, lastValid) => {
+      id = this.store.addBurn({ at: this.now(), kind: 'buyback', status: 'swapping', pump_in: due.toString(), swap_sig: sig, last_valid: lastValid });
+    });
+    if (out === 'pending') return;
+    const b = this.store.openBurns().find((x) => x.id === id)!;
+    await this.finishSwap(b, out);
+    const swapped = this.store.openBurns().find((x) => x.id === id && x.status === 'swapped');
+    if (swapped && !this.stopping) await this.burnCoins(swapped);
+  }
+  private spend(pumpIn: bigint): void {
+    const p = this.store.pots();
+    this.store.setPots({ reward: p.reward, burn: p.burn - pumpIn, due: p.due - pumpIn });
+  }
+  private async finishSwap(b: Burn, out: Exclude<Outcome, 'pending'>): Promise<void> {
+    if (out !== 'confirmed') { this.store.patchBurn(b.id, { status: 'failed' }); return; }
+    const got = await this.chain.bought(b.swap_sig!); // throws until indexed; retried next cycle
+    this.store.tx(() => {
+      this.spend(BigInt(b.pump_in));
+      this.store.patchBurn(b.id, { status: 'swapped', coin_out: got.toString() });
+    });
+  }
+  private async burnCoins(b: Burn): Promise<void> {
+    const out = await this.chain.burn('coin', BigInt(b.coin_out ?? '0'), (sig, lastValid) => this.store.patchBurn(b.id, { status: 'burning', burn_sig: sig, last_valid: lastValid }));
+    if (out !== 'pending') this.finishBurn(b, out);
+  }
+  private finishBurn(b: Burn, out: Exclude<Outcome, 'pending'>): void {
+    if (b.kind === 'direct') {
+      this.store.tx(() => {
+        if (out === 'confirmed') this.spend(BigInt(b.pump_in));
+        this.store.patchBurn(b.id, { status: out === 'confirmed' ? 'done' : 'failed' });
+      });
+    } else {
+      this.store.patchBurn(b.id, { status: out === 'confirmed' ? 'done' : 'swapped' });
+    }
+    if (out === 'confirmed') this.emit('burned', b.id);
+    this.emit('change');
+  }
+}

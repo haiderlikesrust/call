@@ -1,0 +1,13 @@
+import { createRoot } from 'react-dom/client';
+import { MotionConfig } from 'motion/react';
+import '@fontsource-variable/geist';
+import '@fontsource-variable/geist-mono';
+import '@fontsource/bagel-fat-one/latin-400.css';
+import './styles.css';
+import { App } from './App.tsx';
+
+createRoot(document.getElementById('root')!).render(
+  <MotionConfig reducedMotion="user">
+    <App />
+  </MotionConfig>,
+);
