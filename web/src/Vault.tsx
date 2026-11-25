@@ -36,7 +36,9 @@ export function Vault({ reward, burn, floor, pulse }: { reward: number; burn: nu
     io.observe(cv);
 
     function liquid(x0: number, x1: number, top: number, h: number, level: number, t: number, colors: [string, string, string], amp: number) {
-      const y = top + h * (1 - level);
+      if (level < 0.002) return top + h;
+      if (level < 0.002) return top + h;
+    const y = top + h * (1 - level);
       for (let layer = 0; layer < 2; layer++) {
         ctx.beginPath();
         ctx.moveTo(x0, top + h);
@@ -74,7 +76,7 @@ export function Vault({ reward, burn, floor, pulse }: { reward: number; burn: nu
       L.kick *= 0.965;
       const la = Math.min(0.96, s.a / s.scale);
       const lb = Math.min(0.96, (s.b * 4) / s.scale);
-      const amp = (3.5 + L.kick * 7) * Math.min(1, H / 200);
+      const amp = (3.5 + L.kick * 7) * Math.min(1, H / 200) * Math.min(1, la * 12); // flat when empty
       const split = W * 0.8;
 
       ctx.clearRect(0, 0, W, H);

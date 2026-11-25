@@ -18,14 +18,14 @@ Payouts are safe even if the old server is killed outright. The kernel releases 
 
 1. **Application.**
    - **Create Service → Application**, name it `callout`.
-   - **General:** provider GitHub, `haiderlikesrust/call`, branch `main`.
+   - **General:** provider **Git**, `https://github.com/haiderlikesrust/call.git`, branch `main`. For deploys on push, use the **GitHub** provider instead, after giving the Dokploy GitHub app access to this repository.
    - **Build Type:** Dockerfile. **Dockerfile Path** `Dockerfile`, **Docker Context Path** `.`.
 2. **Volumes.** In **Advanced → Volumes**, add two **Volume Mounts** before the first deploy:
 
    | Volume name | Mount path | Holds |
    |---|---|---|
-   | `callout-data` | `/app/data` | The payout ledger and the worker lock. **Without it, every update erases who was paid.** |
-   | `callout-static` | `/app/web/dist/assets` | Scripts and styles from this and earlier builds |
+   | `callonpump-data` | `/app/data` | The payout ledger and the worker lock. **Without it, every update erases who was paid.** |
+   | `callonpump-static` | `/app/web/dist/assets` | Scripts and styles from this and earlier builds |
 
    Both must be local volumes on one node. The lock does not work over NFS or other network storage. If your Swarm has more than one node, pin the service in **Cluster Settings → Swarm Settings → Placement**:
    ```json
@@ -36,22 +36,18 @@ Payouts are safe even if the old server is killed outright. The kernel releases 
 4. **Domain.** In **Domains**, add `callonpump.now`, path `/`, container port **3000**, HTTPS with Let's Encrypt. Point the domain's DNS A record at the VPS first. For `www`, add it the same way plus a "www to non-www" redirect under **Advanced → Redirects**.
 5. **Zero-downtime settings.** In **Advanced → Cluster Settings**:
    - **Replicas:** `1`.
-   - **Swarm Settings → Update Config:**
-     ```json
-     { "Parallelism": 1, "Delay": 0, "FailureAction": "rollback", "Monitor": 60000000000, "MaxFailureRatio": 0, "Order": "start-first" }
-     ```
-   - **Swarm Settings → Rollback Config:**
-     ```json
-     { "Parallelism": 1, "Delay": 0, "FailureAction": "pause", "Monitor": 60000000000, "MaxFailureRatio": 0, "Order": "start-first" }
-     ```
-   - **Swarm Settings → Health Check** (the same one is built into the image; paste it so an update never starts without it):
-     ```json
-     { "Test": ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"], "Interval": 5000000000, "Timeout": 3000000000, "StartPeriod": 60000000000, "Retries": 3 }
-     ```
-   - Durations are in nanoseconds (5000000000 = 5 s).
+   - **Swarm Settings** (forms in Dokploy 0.31; older versions take the same values as JSON):
+
+     | Section | Parallelism | Delay | Failure action | Monitor | Max failure ratio | Order |
+     |---|---|---|---|---|---|---|
+     | Update Config | 1 | 0 | Rollback | 60000000000 | 0 | **Start First** |
+     | Rollback Config | 1 | | Pause | 60000000000 | | Start First |
+
+   - **Health Check:** leave empty. The image has its own.
+   - Durations are in nanoseconds (60000000000 = 60 s).
 6. **Deploy**, then open `https://callonpump.now/api/health`. It should show `"ok": true`, `"state": "active"`, `"mode": "prelaunch"`.
-7. **Backups.** Schedule a volume backup of `callout-data` to S3. It is the record of who was paid.
-8. **Optional:** turn on **Autodeploy** so every push to `main` deploys the same way.
+7. **Backups.** Schedule a volume backup of `callonpump-data` to S3. It is the record of who was paid.
+8. **Autodeploy** only fires with the GitHub provider. Think twice before using it once the treasury key is in the environment: a push to `main` would then run on the server that holds the wallet.
 
 ## Check an update yourself
 
@@ -76,5 +72,5 @@ To stop payouts, set `LIVE_PAYOUTS=false` and redeploy. The queue keeps everyone
 
 - **One replica.** A second would only stand by.
 - **Ledger changes must be additive.** Both versions share the file during an update, and a rollback runs old code on the new schema. Add columns or tables; don't rename or drop in the same release.
-- **Never mount `callout-data` into another app.**
+- **Never mount `callonpump-data` into another app.**
 - **Settings are read at start,** so a change needs a redeploy, which goes through the same hand-over.

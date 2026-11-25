@@ -173,7 +173,7 @@ function file(path: string, res: ServerResponse): void {
   if (f !== DIST && !f.startsWith(DIST + sep)) return send(res, 404, { error: 'not found' });
   if (!existsSync(f) || !statSync(f).isFile()) {
     // Never answer a script request with a page: the browser would cache a broken site.
-    if (extname(path)) return send(res, 404, { error: 'not found' });
+    if (extname(path) || path.includes('/.')) return send(res, 404, { error: 'not found' });
     f = join(DIST, 'index.html');
   }
   if (!existsSync(f)) return send(res, 503, { error: 'site not built yet: run npm run build' });
