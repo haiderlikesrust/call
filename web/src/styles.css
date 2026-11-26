@@ -47,6 +47,7 @@ small { font-size: 0.8em; color: var(--dim); }
 .btn-quiet { background: rgb(39 42 46 / 0.85); color: var(--ink); }
 .btn-quiet:hover { background: #34383d; }
 .btn-big { min-height: 54px; padding: 0 28px; font-size: 1.06rem; }
+.crash { min-height: 100svh; display: grid; place-content: center; justify-items: center; gap: 18px; padding: 24px; text-align: center; color: var(--ink); }
 .btn-x { width: 40px; padding: 0; background: rgb(39 42 46 / 0.85); color: var(--ink); }
 .btn-x:hover { background: #34383d; }
 .btn svg { flex: none; }

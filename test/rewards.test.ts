@@ -31,6 +31,16 @@ test('holding and followers both raise the reward, strictly, until their caps', 
   assert.equal(holdFactor(0n, SUPPLY, rules), 0);
 });
 
+test('rules a page does not know give nothing instead of throwing', () => {
+  const pot = toUnits(1_000_000);
+  assert.equal(rewardFor(pot, NaN, 1, rules), 0n);
+  assert.equal(rewardFor(pot, 0.5, NaN, rules), 0n);
+  assert.equal(rewardFor(pot, Infinity, Infinity, rules), 0n);
+  assert.equal(rewardFor(pot, 0.5, 1, { ...rules, maxPotShareBps: NaN }), 0n);
+  const old = { ...rules, baseScore: undefined, bagWeight: undefined } as unknown as typeof rules;
+  assert.doesNotThrow(() => rewardFor(pot, score(pct(1), SUPPLY, 500, old), 1, old));
+});
+
 test('nobody can take more than the cap, and the pot can never be overdrawn', () => {
   const pot = toUnits(1_000_000);
   assert.equal(rewardFor(pot, 1, 1, rules), toUnits(25_000));

@@ -52,8 +52,10 @@ export function aging(hoursQueued: number, r: Rules): number {
 
 /** reward = pot x maxPotShare x score x aging. A share of the pot, so it can never overdraw it. */
 export function rewardFor(pot: bigint, s: number, age: number, r: Rules): bigint {
-  if (pot <= 0n || s <= 0) return 0n;
-  const ppb = BigInt(Math.floor(Math.min(1, s) * age * Number(PPB)));
+  // An open page from an older build can hand this rules it doesn't know, which gives NaN. Pay nothing, don't throw.
+  const k = Math.min(1, s) * age;
+  if (pot <= 0n || !(k > 0) || !Number.isFinite(k) || !Number.isInteger(r.maxPotShareBps)) return 0n;
+  const ppb = BigInt(Math.floor(k * Number(PPB)));
   const amount = (pot * BigInt(r.maxPotShareBps) * ppb) / (10_000n * PPB);
   return amount > pot ? pot : amount;
 }
