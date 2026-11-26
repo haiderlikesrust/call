@@ -92,7 +92,7 @@ export function Field({ data }: { data: Snapshot }) {
         <p className="dim">{pct((est / Math.max(1, pool)) * 100)} of the pool, plus {fmt(est / (rules.rewardBps / (10_000 - rules.rewardBps)), est < 400 ? 1 : 0)} $PUMP sent to the furnace.{waits && <b className="ember"> Too small to send at this pool size, so it would wait in line.</b>}</p>
         <label className="slide"><span>You hold <b>{pct(hold)}</b> <i>{compact(hold * 1e7)} tokens</i></span>
           <input id="hold" type="range" min="0" max="1" step="0.005" value={y} onChange={(e) => setY(+e.target.value)} /></label>
-        <label className="slide"><span>You have <b>{fmt(followers)}</b> followers</span>
+        <label className="slide"><span>You have <b>{fmt(followers)}</b> pump.fun followers</span>
           <input id="followers" type="range" min="0" max="1" step="0.005" value={x} onChange={(e) => setX(+e.target.value)} /></label>
         <label className="slide"><span>Reward pool <b>{compact(pool)}</b> <i>$PUMP{z === null ? ', live' : data.mode === 'prelaunch' ? ', example' : ''}</i></span>
           <input id="pool" type="range" min="0" max="1" step="0.005" value={z ?? zLive} onChange={(e) => setZ(+e.target.value)} /></label>

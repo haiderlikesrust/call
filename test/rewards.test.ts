@@ -20,8 +20,8 @@ test('holding and followers both raise the reward, strictly, until their caps', 
   assert.equal(holdFactor(pct(1), SUPPLY, rules), 1);
   assert.equal(holdFactor(pct(5), SUPPLY, rules), 1);
   last = -1;
-  for (const f of [0, 10, 100, 1_000, 10_000, 100_000]) { const v = followFactor(f, rules); assert.ok(v > last); last = v; }
-  assert.equal(followFactor(100_000, rules), 1);
+  for (const f of [0, 10, 100, 1_000, 10_000]) { const v = followFactor(f, rules); assert.ok(v > last); last = v; }
+  assert.equal(followFactor(10_000, rules), 1);
   assert.equal(followFactor(9_000_000, rules), 1);
   assert.equal(holdFactor(0n, SUPPLY, rules), 0);
 });
@@ -87,16 +87,20 @@ test('reconcile: deposits split 80/20, withdrawals shrink both pots, totals alwa
   assert.equal(reconcile(0n, { reward: 0n, burn: 0n }, rules).intake, 0n);
 });
 
-test('splitting one bag across many wallets does not pay', () => {
-  // One 1% holder with 1,000 followers vs the same bag over N accounts that each have the minimum following.
-  const honest = score(pct(1), SUPPLY, 1_000, rules);
-  for (const n of [2, 5, 10]) {
-    const split = n * score(pct(1) / BigInt(n), SUPPLY, rules.minFollowers, rules);
-    assert.ok(split < honest, `${n} wallets: ${split} vs ${honest}`);
-  }
-  // At the extreme the gain stays bounded even though it costs 100 accounts with the minimum following.
-  const extreme = 100 * score(pct(1) / 100n, SUPPLY, rules.minFollowers, rules);
-  assert.ok(extreme < honest * 2, `${extreme} vs ${honest}`);
+test('every qualifying callout starts from the base share, and bag and reach add to it', () => {
+  const pot = toUnits(1_000_000);
+  const cap = (pot * BigInt(rules.maxPotShareBps)) / 10_000n;
+  const smallest = rewardFor(pot, score(pct(0.01), SUPPLY, rules.minFollowers, rules), 1, rules);
+  const base = (cap * BigInt(Math.round(rules.baseScore * 1e9))) / 1_000_000_000n;
+  assert.ok(smallest >= base, `${smallest} vs base ${base}`);
+  assert.ok(smallest < base + cap / 50n, 'barely above the base');
+  const bigger = rewardFor(pot, score(pct(0.25), SUPPLY, 500, rules), 1, rules);
+  assert.ok(bigger * 2n > smallest * 3n, 'a bigger bag and following earns clearly more');
+  assert.equal(rewardFor(pot, score(pct(1), SUPPLY, rules.followersFull, rules), 1, rules), cap);
+  // Below the entry rules there is no base: the lookup shows what little the raw score would give.
+  assert.ok(score(pct(0.001), SUPPLY, 1_000, rules) < rules.baseScore);
+  assert.ok(score(pct(1), SUPPLY, rules.minFollowers - 1, rules) < rules.baseScore + 0.5);
+  assert.equal(score(0n, SUPPLY, 1_000, rules), 0);
 });
 
 test('eligibility', () => {

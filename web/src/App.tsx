@@ -314,7 +314,7 @@ function Rules({ data }: { data: Snapshot }) {
   const list: [string, string][] = [
     ['Hold', `At least ${r.minHoldBps / 100}% of supply, checked on-chain when you call out and again right before you are paid.`],
     ['Keep holding', `${demo ? 10 : r.holdMinutes} minutes. We pay on the lowest balance we see in that time.`],
-    ['Have a following', `${r.minFollowers} followers or more.${r.minAccountAgeDays ? ` The account must be at least ${r.minAccountAgeDays} days old.` : ' New accounts are welcome.'}`],
+    ['Have a following', `${r.minFollowers} pump.fun followers or more.${r.minAccountAgeDays ? ` The account must be at least ${r.minAccountAgeDays} days old.` : ' New accounts are welcome.'}`],
     ['Keep calling', `Earn again every ${demo ? 10 : r.cooldownMinutes} minutes, one callout at a time. Anything sooner counts as spam and earns nothing.`],
     ['Keep it up', 'Deleting the callout before payout gives up the reward.'],
   ];
@@ -323,10 +323,11 @@ function Rules({ data }: { data: Snapshot }) {
       <div className="wrap section rules">
         <div className="rules-sum">
           <h2>The sum</h2>
-          <p className="formula"><span>pot</span> × <span>{r.maxPotShareBps / 100}%</span> × <span>bag</span> × <span>reach</span></p>
+          <p className="formula"><span>pot</span> × <span>{r.maxPotShareBps / 100}%</span> × (<span>{Math.round(r.baseScore * 100)}%</span> + <span>{Math.round((1 - r.baseScore) * 100)}%</span> × <span>bag</span> × <span>reach</span>)</p>
           <ul>
+            <li>Every callout that qualifies starts at <b>{Math.round(r.baseScore * 100)}%</b> of the maximum, so a small bag still earns. Bag and reach fill in the rest.</li>
             <li><b>bag</b> climbs to full at {r.holdFullBps / 100}% of supply.</li>
-            <li><b>reach</b> climbs to full at {compact(r.followersFull)} followers, on a log curve, so your next thousand matters at any size.</li>
+            <li><b>reach</b> is your pump.fun followers. It climbs to full at {compact(r.followersFull)}, on a log curve, so going from 100 to 1K counts as much as 1K to 10K.</li>
             <li><b>pot</b> is the reward pool at the moment you are paid. Double the pool and every reward doubles; as it drains, rewards shrink with it. No callout can take more than {r.maxPotShareBps / 100}% of it before queue weight, or {(r.maxPotShareBps * r.agingCap) / 100}% after.</li>
             <li>Anything under {compact(r.minPayout)} $PUMP waits for a bigger pot instead of being sent as dust.</li>
           </ul>

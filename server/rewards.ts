@@ -22,9 +22,21 @@ export function followFactor(followers: number, r: Rules): number {
   return r.followFloor + (1 - r.followFloor) * t;
 }
 
-/** 0..1. Multiplicative on purpose: a bag without reach, or reach without a bag, earns little. */
-export const score = (balance: bigint, supply: bigint, followers: number, r: Rules): number =>
-  holdFactor(balance, supply, r) * followFactor(followers, r);
+/** True when the bag and following clear the entry rules (min holding, min followers). */
+export const qualifies = (balance: bigint, supply: bigint, followers: number, r: Rules): boolean =>
+  supply > 0n && balance > 0n && balance * 1_000_000n >= supply * BigInt(Math.round(r.minHoldBps * 100)) && followers >= r.minFollowers;
+
+/**
+ * 0..1. A qualifying callout starts at baseScore, so small holders still earn something worth having.
+ * The rest is bag x reach, multiplicative on purpose: a bag without reach, or reach without a bag, adds little.
+ * The base pays per callout, so splitting one bag across accounts earns more; the entry rules,
+ * the hold window and the per-account cooldown are what limit that.
+ */
+export function score(balance: bigint, supply: bigint, followers: number, r: Rules): number {
+  const raw = holdFactor(balance, supply, r) * followFactor(followers, r);
+  if (raw <= 0) return 0;
+  return qualifies(balance, supply, followers, r) ? r.baseScore + (1 - r.baseScore) * raw : raw;
+}
 
 export function aging(hoursQueued: number, r: Rules): number {
   return Math.min(r.agingCap, 1 + Math.max(0, hoursQueued) * r.agingPerHour);

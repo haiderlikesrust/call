@@ -25,14 +25,15 @@ Modes: **demo** (no API key), **dry-run** (real callouts, nothing sent), **live*
 ## The reward
 
 ```
-reward = reward pot x 2.5% x bag x reach x queue weight
+reward = reward pot x 2.5% x (0.2 + 0.8 x bag x reach) x queue weight
 bag    = min(1, share of supply / 1%) ^ 0.75
-reach  = 0.1 + 0.9 x min(1, log10(1 + followers) / log10(100,001))
+reach  = 0.1 + 0.9 x min(1, log10(1 + pump.fun followers) / log10(10,001))
 burn   = reward x 20/80, from the burn pot
 ```
 
 * A share of the pot can never overdraw it. One callout takes at most 2.5% (5% with full queue weight).
-* Bag and reach multiply, so neither a whale nobody follows nor an influencer with dust gets a big cut. 0.75 keeps small bags worth something while making bag splitting a losing trade at realistic sizes (see `test/rewards.test.ts`).
+* Every qualifying callout starts at 0.2 (`BASE_SCORE`): 0.5% of the pot, $5 per $1,000. Bag and reach multiply on top, so neither a whale nobody follows nor an account with dust gets the top cut.
+* The base is paid per callout, so splitting one bag across several pump.fun accounts earns more than holding it in one. The entry rules (0.01% held, 10 followers), the 10-minute hold and the per-account cooldown are what limit that. Lower `BASE_SCORE` if farming shows up.
 * Below `MIN_PAYOUT_PUMP`, or while the pot is below `POT_FLOOR_PUMP`, a callout waits in the queue. Oldest first. Each hour adds 5% weight up to 2x. Someone whose share is still too small does not block the people behind. Tickets expire after 7 days, or at once if the holder sells.
 
 ## Guards
