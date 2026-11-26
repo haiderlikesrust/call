@@ -11,6 +11,11 @@ import { LeaderLock } from './leader.ts';
 import { rewardFor, score } from './rewards.ts';
 import { Store } from './store.ts';
 import { snapshot } from './view.ts';
+import { checkSettings, report } from './settings.ts';
+
+// A bad setting stops the server here, with a message naming it. During an update, Swarm then keeps the previous
+// server running, so a typo never replaces a working site (or pauses payouts) with a broken one.
+if (report(checkSettings(process.env), 'The server') && mode !== 'demo') process.exit(1);
 
 const demo = mode === 'demo';
 // The demo plays the same movie faster: 8s to mature instead of 10 minutes.

@@ -4,6 +4,9 @@ import { OnlinePumpSdk } from '@pump-fun/pump-sdk';
 import { PUMP_MINT, config, mode, rules } from './config.ts';
 import { SolanaChain } from './chain.ts';
 import { LiveSource } from './pumpApi.ts';
+import { checkSettings, report } from './settings.ts';
+
+if (report(checkSettings(process.env), 'npm run doctor')) process.exit(1);
 
 let bad = 0;
 const check = async (name: string, fn: () => Promise<string>) => {
