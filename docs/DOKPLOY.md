@@ -68,6 +68,10 @@ The new container logs `[leader] standby`, then `[leader] active`. The old one l
 
 To stop payouts, set `LIVE_PAYOUTS=false` and redeploy. The queue keeps everyone's place.
 
+## When an update does not take
+
+If the site still shows the old version after a deploy (for example "Not live yet" after setting `COIN_MINT`), the new container stopped and Swarm kept the old one: the Docker Terminal lists it as **exited**. Open its logs. A bad setting is named on the `[settings]` lines, for example `RPC_URL must be a full URL starting with https://`. Fix it in **Environment**, save, and deploy again. Secret keys are never printed there.
+
 ## Rules that keep updates seamless
 
 - **One replica.** A second would only stand by.

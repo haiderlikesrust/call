@@ -72,6 +72,7 @@ function Nav({ data, online, stale }: { data: Snapshot | null; online: boolean; 
   );
 }
 
+const minutes = (m: number) => `${m} minute${m === 1 ? '' : 's'}`;
 /** How often each holder is checked: one pass over all of them. */
 const every = (ms: number) => (ms < 60_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60_000)} min`);
 
@@ -200,7 +201,7 @@ function Live({ data }: { data: Snapshot }) {
         </ol>
         <ol className="path" aria-label="What happens to a callout">
           <li><b>Spotted</b><p>Holder check on-chain, the moment it appears.</p></li>
-          <li><b>Holding{n('maturing') > 0 && <span className="chip">{n('maturing')} now</span>}</b><p>{data.mode === 'demo' ? 'Ten minutes live, sped up here.' : `${data.rules.holdMinutes} minutes without selling.`} Your lowest balance is the one that counts.</p></li>
+          <li><b>Holding{n('maturing') > 0 && <span className="chip">{n('maturing')} now</span>}</b><p>{data.mode === 'demo' ? 'Two minutes live, sped up here.' : `${minutes(data.rules.holdMinutes)} without selling.`} Your lowest balance is the one that counts.</p></li>
           <li><b>In line{data.stats.queue > 0 && <span className="chip">{data.stats.queue} now</span>}</b><p>Paid oldest first. If the pot is dry you keep your place, and waiting adds weight.</p></li>
           <li><b>Paid</b><p>$PUMP arrives in your wallet. The matching slice goes to the furnace.</p></li>
         </ol>
@@ -316,7 +317,7 @@ function Rules({ data }: { data: Snapshot }) {
   const demo = data.mode === 'demo';
   const list: [string, string][] = [
     ['Hold', `At least ${r.minHoldBps / 100}% of supply, checked on-chain when you call out and again right before you are paid.`],
-    ['Keep holding', `${demo ? 10 : r.holdMinutes} minutes. We pay on the lowest balance we see in that time.`],
+    ['Keep holding', `${minutes(demo ? 2 : r.holdMinutes)}. We pay on the lowest balance we see in that time.`],
     ['Have a following', `${r.minFollowers} pump.fun followers or more.${r.minAccountAgeDays ? ` The account must be at least ${r.minAccountAgeDays} days old.` : ' New accounts are welcome.'}`],
     ['Keep calling', `Earn again every ${demo ? 10 : r.cooldownMinutes} minutes, one callout at a time. Anything sooner counts as spam and earns nothing.`],
     ['Keep it up', 'Deleting the callout before payout gives up the reward.'],

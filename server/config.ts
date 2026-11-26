@@ -1,12 +1,13 @@
 // Every tunable lives here. Values come from .env; nothing secret is ever sent to the browser.
+// Values are checked by settings.ts before the server starts, so a bad one stops it with a clear message.
 const env = process.env;
 
+/** Not a number: the default for now. settings.ts reports it and stops the server before it is used. */
 const num = (k: string, d: number): number => {
-  const raw = env[k];
-  if (raw === undefined || raw === '') return d;
+  const raw = env[k]?.trim();
+  if (!raw) return d;
   const n = Number(raw);
-  if (!Number.isFinite(n)) throw new Error(`${k} must be a number, got "${raw}"`);
-  return n;
+  return Number.isFinite(n) ? n : d;
 };
 const str = (k: string, d = ''): string => env[k]?.trim() || d;
 const list = (k: string): string[] => str(k).split(',').map((s) => s.trim()).filter(Boolean);
@@ -38,7 +39,7 @@ export const rules = {
   /** 0 = new accounts can earn. Uses pump.fun's account date from the holder feed; gmgn-only callouts have none. */
   minAccountAgeDays: num('MIN_ACCOUNT_AGE_DAYS', 0),
   /** A bag must sit still this long after the callout before it is paid. */
-  holdMinutes: num('HOLD_MINUTES', 10),
+  holdMinutes: num('HOLD_MINUTES', 2),
   /** Minutes between rewarded callouts from one wallet or pump.fun account. */
   cooldownMinutes: num('COOLDOWN_MINUTES', 10),
   /** Smallest transfer worth sending, in whole $PUMP. Below it the callout stays queued. */
