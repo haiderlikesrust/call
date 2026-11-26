@@ -40,6 +40,10 @@ export function App() {
 
 // ---------------------------------------------------------------- chrome
 
+const XLogo = () => (
+  <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path fill="currentColor" d="M18.9 2H22l-6.8 7.8L23.2 22h-6.3l-4.9-6.4L6.4 22H3.3l7.3-8.3L2.9 2h6.4l4.4 5.9L18.9 2Zm-1.1 18.1h1.7L8.3 3.8H6.5l11.3 16.3Z" /></svg>
+);
+const xHandle = (url: string) => '@' + (url.replace(/\/+$/, '').split('/').pop() ?? '');
 const coinUrl = (d: Snapshot | null) => (d?.coin.mint ? `https://pump.fun/coin/${d.coin.mint}` : 'https://pump.fun');
 
 function Nav({ data, online, stale }: { data: Snapshot | null; online: boolean; stale: boolean }) {
@@ -57,6 +61,7 @@ function Nav({ data, online, stale }: { data: Snapshot | null; online: boolean; 
         <div className="nav-end">
           {stale ? <button className="btn btn-update" onClick={() => location.reload()}>Update</button> : <Status data={data} online={online} />}
           {data?.coin.mint && <button className="btn btn-quiet mono" onClick={copy}>{copied ? 'Copied' : short(data.coin.mint)}</button>}
+          {data?.coin.xUrl && <a className="btn btn-x" href={data.coin.xUrl} target="_blank" rel="noreferrer" aria-label={`${xHandle(data.coin.xUrl)} on X`} title={`${xHandle(data.coin.xUrl)} on X`}><XLogo /></a>}
           <a className="btn" href={coinUrl(data)} target="_blank" rel="noreferrer">Call it out</a>
         </div>
       </div>
@@ -342,12 +347,14 @@ function Footer({ data }: { data: Snapshot | null }) {
       </picture>
       <div className="wrap foot-in">
         <h2>{data?.mode === 'prelaunch' ? 'The pot opens soon' : 'The pot is open'}</h2>
-        <a className="btn btn-big" href={coinUrl(data)} target="_blank" rel="noreferrer">Make a callout</a>
+        <div className="foot-cta">
+          <a className="btn btn-big" href={coinUrl(data)} target="_blank" rel="noreferrer">Make a callout</a>
+          {data?.coin.xUrl && <a className="btn btn-big btn-quiet" href={data.coin.xUrl} target="_blank" rel="noreferrer"><XLogo /> Follow {xHandle(data.coin.xUrl)}</a>}
+        </div>
       </div>
       <div className="wrap foot-legal">
         <p>Data from <a href="https://pump.fun" target="_blank" rel="noreferrer">pump.fun</a>. Unofficial fan project. Not made by, affiliated with or endorsed by pump.fun. Character art is fan art.</p>
         <p>Rewards depend on trading fees, can be zero, and are not guaranteed. Estimates move with the pot. Memecoins can go to zero; nothing here is financial advice.</p>
-        {data?.coin.xUrl && <a href={data.coin.xUrl} target="_blank" rel="noreferrer">Follow on X</a>}
       </div>
     </footer>
   );

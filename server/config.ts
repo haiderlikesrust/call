@@ -50,7 +50,7 @@ export const config = {
   coinMint: str('COIN_MINT'),
   coinSymbol: str('COIN_SYMBOL', 'CALLOUT'),
   siteName: str('SITE_NAME', 'Callout'),
-  xUrl: str('X_URL'),
+  xUrl: str('X_URL', 'https://x.com/calloutonpmp'),
   port: num('PORT', 8787),
   host: str('HOST', '127.0.0.1'),
   dbPath: str('DB_PATH', 'data/callout.db'),

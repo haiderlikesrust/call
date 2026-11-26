@@ -40,13 +40,16 @@ small { font-size: 0.8em; color: var(--dim); }
 .loading { padding-block: 120px; color: var(--dim); }
 .empty { padding: 26px; border: 1px dashed var(--line); border-radius: 20px; color: var(--dim); }
 
-.btn { display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 0 18px; border: 0; border-radius: 999px; background: var(--sprout); color: var(--deep); font: 600 0.94rem var(--body); text-decoration: none; cursor: pointer; white-space: nowrap; transition: transform 0.15s, background 0.15s; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 9px; min-height: 40px; padding: 0 18px; border: 0; border-radius: 999px; background: var(--sprout); color: var(--deep); font: 600 0.94rem var(--body); text-decoration: none; cursor: pointer; white-space: nowrap; transition: transform 0.15s, background 0.15s; }
 .btn:hover { background: #a7f5c1; transform: translateY(-1px); }
 .btn:active { transform: translateY(1px); }
 .btn:disabled { opacity: 0.6; cursor: wait; }
 .btn-quiet { background: rgb(39 42 46 / 0.85); color: var(--ink); }
 .btn-quiet:hover { background: #34383d; }
 .btn-big { min-height: 54px; padding: 0 28px; font-size: 1.06rem; }
+.btn-x { width: 40px; padding: 0; background: rgb(39 42 46 / 0.85); color: var(--ink); }
+.btn-x:hover { background: #34383d; }
+.btn svg { flex: none; }
 
 /* nav */
 .nav { position: sticky; top: 0; z-index: 20; background: rgb(14 15 17 / 0.82); backdrop-filter: blur(14px); }
@@ -210,6 +213,7 @@ input[type='range']::-moz-range-thumb { width: 40px; height: 22px; border: 0; bo
 .foot { position: relative; isolation: isolate; overflow: hidden; }
 .foot picture img { width: 100%; height: min(54vw, 720px); min-height: 480px; object-fit: cover; object-position: 50% 80%; mask-image: linear-gradient(transparent, #000 28%, #000 78%, transparent); }
 .foot-in { position: absolute; inset: 60px 0 auto; display: grid; gap: 24px; justify-items: center; text-align: center; }
+.foot-cta { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
 .foot-in h2 { font-size: clamp(2.8rem, 7vw, 5.6rem); }
 .foot-legal { display: grid; gap: 8px; padding-block: 8px 44px; color: var(--dim); font-size: 0.88rem; }
 .foot-legal p { max-width: 70ch; }
