@@ -39,7 +39,7 @@ export const rules = {
   /** 0 = new accounts can earn. Uses pump.fun's account date from the holder feed; gmgn-only callouts have none. */
   minAccountAgeDays: num('MIN_ACCOUNT_AGE_DAYS', 0),
   /** A bag must sit still this long after the callout before it is paid. */
-  holdMinutes: num('HOLD_MINUTES', 10),
+  holdMinutes: num('HOLD_MINUTES', 2),
   /** Minutes between rewarded callouts from one wallet or pump.fun account. */
   cooldownMinutes: num('COOLDOWN_MINUTES', 10),
   /** Smallest transfer worth sending, in whole $PUMP. Below it the callout stays queued. */
