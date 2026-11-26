@@ -1,4 +1,4 @@
-# Deploy callonpump.now on Dokploy (zero-downtime updates)
+# Deploy calloutonpump.now on Dokploy (zero-downtime updates)
 
 The app is one Docker image (the [`Dockerfile`](../Dockerfile) at the repo root): a Node server for the site, the API and the payout worker. The ledger is a SQLite file on a Docker volume, so there is no database service to run.
 
@@ -33,7 +33,7 @@ Payouts are safe even if the old server is killed outright. The kernel releases 
    ```
    (or a `node.hostname==` constraint if you have several managers).
 3. **Environment.** Paste [`deploy/dokploy.env.example`](../deploy/dokploy.env.example). It can stay empty for the first deploy. These are runtime values: never put them in **Build-time Arguments**.
-4. **Domain.** In **Domains**, add `callonpump.now`, path `/`, container port **3000**, HTTPS with Let's Encrypt. Point the domain's DNS A record at the VPS first. For `www`, add it the same way plus a "www to non-www" redirect under **Advanced → Redirects**.
+4. **Domain.** In **Domains**, add `calloutonpump.now`, path `/`, container port **3000**, HTTPS with Let's Encrypt. Point the domain's DNS A record at the VPS first. For `www`, add it the same way plus a "www to non-www" redirect under **Advanced → Redirects**. If the site used to live on another domain (it was `callonpump.now`), keep that domain added too with a redirect to `https://calloutonpump.now`, so old links and shares still land.
 5. **Zero-downtime settings.** In **Advanced → Cluster Settings**:
    - **Replicas:** `1`.
    - **Swarm Settings** (forms in Dokploy 0.31; older versions take the same values as JSON):
@@ -45,7 +45,7 @@ Payouts are safe even if the old server is killed outright. The kernel releases 
 
    - **Health Check:** leave empty. The image has its own.
    - Durations are in nanoseconds (60000000000 = 60 s).
-6. **Deploy**, then open `https://callonpump.now/api/health`. It should show `"ok": true`, `"state": "active"`, `"mode": "prelaunch"`.
+6. **Deploy**, then open `https://calloutonpump.now/api/health`. It should show `"ok": true`, `"state": "active"`, `"mode": "prelaunch"`.
 7. **Backups.** Schedule a volume backup of `callonpump-data` to S3. It is the record of who was paid.
 8. **Autodeploy** only fires with the GitHub provider. Think twice before using it once the treasury key is in the environment: a push to `main` would then run on the server that holds the wallet.
 
@@ -54,7 +54,7 @@ Payouts are safe even if the old server is killed outright. The kernel releases 
 Leave this running while you click **Deploy**. It should print only `200`:
 
 ```bash
-while true; do curl -s -o /dev/null -w '%{http_code} %{time_total}s\n' https://callonpump.now/api/state; sleep 0.3; done
+while true; do curl -s -o /dev/null -w '%{http_code} %{time_total}s\n' https://calloutonpump.now/api/state; sleep 0.3; done
 ```
 
 The new container logs `[leader] standby`, then `[leader] active`. The old one logs `[shutdown] worker handed over`.
