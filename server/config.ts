@@ -18,18 +18,22 @@ export const rules = {
   rewardBps: num('REWARD_BPS', 8000),
   /** Largest slice of the reward pot one callout can take (score = 1). */
   maxPotShareBps: num('MAX_POT_SHARE_BPS', 250),
-  /** Score every qualifying callout starts from, before bag and reach. 0.2 x 2.5% = 0.5% of the pot ($5 per $1,000). */
+  /** Score every qualifying callout starts from. 0.2 x 2.5% = 0.5% of the pot ($5 per $1,000). */
   baseScore: num('BASE_SCORE', 0.2),
-  /** Supply share at which the holding factor is maxed. 100 bps = 1%. */
-  holdFullBps: num('HOLD_FULL_BPS', 100),
+  /** Score a full bag adds. pump.fun followers add the rest (1 - base - bag), so each pays on its own. */
+  bagWeight: num('BAG_WEIGHT', 0.5),
+  /** Each rewarded callout in a row where the wallet kept its bag grows the bag part by this much, compounding. */
+  holdStreakRate: num('HOLD_STREAK_RATE', 0.1),
+  /** The streak can multiply the bag part by at most this. */
+  holdStreakCap: num('HOLD_STREAK_CAP', 3),
+  /** Supply share at which the holding factor is maxed. 200 bps = 2%; more still counts as full. */
+  holdFullBps: num('HOLD_FULL_BPS', 200),
   /** Below 1 flattens the holding curve. */
   holdExponent: num('HOLD_EXPONENT', 0.75),
-  /** Minimum holding in basis points of supply. 1 bp of 1B = 100k tokens. */
-  minHoldBps: num('MIN_HOLD_BPS', 1),
-  /** pump.fun followers at which the follower factor is maxed. */
+  /** Minimum holding in basis points of supply. 10 bps = 0.1% = 1M tokens of 1B. */
+  minHoldBps: num('MIN_HOLD_BPS', 10),
+  /** pump.fun followers at which the follower factor is maxed. It starts from 0 at minFollowers. */
   followersFull: num('FOLLOWERS_FULL', 10_000),
-  /** Follower factor of an account at zero followers. */
-  followFloor: num('FOLLOW_FLOOR', 0.1),
   minFollowers: num('MIN_FOLLOWERS', 10),
   /** 0 = new accounts can earn. */
   minAccountAgeDays: num('MIN_ACCOUNT_AGE_DAYS', 0),

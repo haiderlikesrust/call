@@ -155,9 +155,10 @@ async function wallet(addr: string, res: ServerResponse): Promise<void> {
   const hit = walletCache.get(addr);
   if (hit && Date.now() - hit.at < 60_000) return send(res, 200, hit.body);
   const [balance, supply, followers] = await Promise.all([chain.holding(addr), chain.supply(), source.followers(addr)]);
-  const s = score(balance, supply, followers ?? 0, rules);
+  const streak = store.holdStreak(addr, balance, Date.now());
+  const s = score(balance, supply, followers ?? 0, rules, streak);
   const body = {
-    wallet: addr, followers, holdPct: supply > 0n ? Number((balance * 1_000_000n) / supply) / 10_000 : 0, score: s,
+    wallet: addr, followers, holdPct: supply > 0n ? Number((balance * 1_000_000n) / supply) / 10_000 : 0, score: s, streak,
     estimate: Number(rewardFor(store.pots().reward, s, 1, rules)) / 1e6,
     holds: balance > 0n && balance * 1_000_000n >= supply * BigInt(Math.round(rules.minHoldBps * 100)),
     reach: (followers ?? 0) >= rules.minFollowers,

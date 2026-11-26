@@ -1,12 +1,11 @@
 // "What would mine pay?" A field of pills: sideways is reach, up is bag size, and each pill's
 // size is the score at that point. Same functions the payout engine runs.
 import { useEffect, useRef, useState, type PointerEvent } from 'react';
-import { rewardFor, score, toUnits } from '../../server/rewards.ts';
+import { rewardFor, score, streakBoost, toUnits } from '../../server/rewards.ts';
 import { compact, fmt, pct, short, useEased, type Snapshot } from './live.ts';
 
 const SUPPLY = 10n ** 15n;
 const X0 = 10;
-const Y0 = 0.01;
 // Pool sizes the slider spans, in $PUMP.
 const P0 = 5_000;
 const P1 = 20_000_000;
@@ -16,11 +15,13 @@ export function Field({ data }: { data: Snapshot }) {
   const { rules, pots } = data;
   const X1 = rules.followersFull;
   const Y1 = rules.holdFullBps / 100;
+  const Y0 = rules.minHoldBps / 100;
   const [x, setX] = useState(0.55); // 0..1 along followers (log)
   const [y, setY] = useState(0.62); // 0..1 along holding (log)
   const followers = Math.round(X0 * (X1 / X0) ** x);
   const hold = Y0 * (Y1 / Y0) ** y;
-  const s = score(bag(hold), SUPPLY, followers, rules);
+  const [streak, setStreak] = useState(0);
+  const s = score(bag(hold), SUPPLY, followers, rules, streak);
   const [z, setZ] = useState<number | null>(data.mode === 'prelaunch' ? 0.65 : null); // null follows the live pool
   const pool = z === null ? pots.reward : P0 * (P1 / P0) ** z;
   const zLive = Math.min(1, Math.max(0, Math.log(Math.max(P0, pots.reward) / P0) / Math.log(P1 / P0)));
@@ -44,7 +45,7 @@ export function Field({ data }: { data: Snapshot }) {
       for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) {
         const u = (i + 0.5) / nx;
         const v = 1 - (j + 0.5) / ny;
-        const k = score(bag(Y0 * (Y1 / Y0) ** v), SUPPLY, X0 * (X1 / X0) ** u, rules);
+        const k = score(bag(Y0 * (Y1 / Y0) ** v), SUPPLY, X0 * (X1 / X0) ** u, rules, streak);
         const near = Math.max(0, 1 - Math.hypot((u - x) * (W / H), v - y) / 0.22);
         const w = 7 + k * 19 + near * 4;
         const h = w * 0.52;
@@ -94,6 +95,8 @@ export function Field({ data }: { data: Snapshot }) {
           <input id="hold" type="range" min="0" max="1" step="0.005" value={y} onChange={(e) => setY(+e.target.value)} /></label>
         <label className="slide"><span>You have <b>{fmt(followers)}</b> pump.fun followers</span>
           <input id="followers" type="range" min="0" max="1" step="0.005" value={x} onChange={(e) => setX(+e.target.value)} /></label>
+        <label className="slide"><span>Held through <b>{streak}</b> {streak === 1 ? 'callout' : 'callouts'} in a row <i>bag ×{streakBoost(streak, rules).toFixed(2)}</i></span>
+          <input id="streak" type="range" min="0" max={Math.ceil(Math.log(rules.holdStreakCap) / Math.log(1 + rules.holdStreakRate))} step="1" value={streak} onChange={(e) => setStreak(+e.target.value)} /></label>
         <label className="slide"><span>Reward pool <b>{compact(pool)}</b> <i>$PUMP{z === null ? ', live' : data.mode === 'prelaunch' ? ', example' : ''}</i></span>
           <input id="pool" type="range" min="0" max="1" step="0.005" value={z ?? zLive} onChange={(e) => setZ(+e.target.value)} /></label>
         {z !== null && data.mode !== 'prelaunch' && <button type="button" className="btn btn-quiet reset" onClick={() => setZ(null)}>Back to the live pool</button>}
@@ -103,7 +106,7 @@ export function Field({ data }: { data: Snapshot }) {
   );
 }
 
-interface Found { wallet: string; followers: number | null; holdPct: number; estimate: number; holds: boolean; reach: boolean }
+interface Found { wallet: string; followers: number | null; holdPct: number; estimate: number; holds: boolean; reach: boolean; streak?: number }
 
 function Lookup({ symbol }: { symbol: string }) {
   const [addr, setAddr] = useState('');
@@ -136,7 +139,7 @@ function Lookup({ symbol }: { symbol: string }) {
           <p className={found.holds && found.reach ? 'good' : 'bad'}>
             {!found.holds ? `${short(found.wallet)} does not hold enough $${symbol} yet.`
               : !found.reach ? `${short(found.wallet)} holds ${pct(found.holdPct)} but needs more followers.`
-              : `${short(found.wallet)} holds ${pct(found.holdPct)} with ${fmt(found.followers ?? 0)} followers: about ${fmt(found.estimate)} $PUMP per callout.`}
+              : `${short(found.wallet)} holds ${pct(found.holdPct)} with ${fmt(found.followers ?? 0)} pump.fun followers${found.streak ? ` and a ${found.streak}-callout holding streak` : ''}: about ${fmt(found.estimate)} $PUMP per callout.`}
           </p>
         )}
       </div>

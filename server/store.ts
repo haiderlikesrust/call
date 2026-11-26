@@ -110,6 +110,24 @@ export class Store {
       WHERE (wallet = ? OR user_hash = ?) AND status IN ('maturing', 'ready', 'sending', 'paid')`).get(wallet, userHash) as { t: number | null };
     return row.t;
   }
+  /**
+   * Rewarded callouts in a row, newest first, where this wallet kept its bag: each one held at least
+   * as much as the one before it, and `low` (the bag now) is at least the last one. A callout that was
+   * dropped because the holder sold ends the run.
+   */
+  holdStreak(wallet: string, low: bigint, before: number): number {
+    const rows = this.db.prepare(`SELECT status, reason, min_balance FROM callouts
+      WHERE wallet = ? AND seen_at < ? AND (status = 'paid' OR (status = 'rejected' AND reason = 'sold'))
+      ORDER BY seen_at DESC LIMIT 60`).all(wallet, before) as { status: string; reason: string | null; min_balance: string }[];
+    let need = low, n = 0;
+    for (const row of rows) {
+      const held = BigInt(row.min_balance);
+      if (row.status !== 'paid' || held > need) break;
+      n++;
+      need = held;
+    }
+    return n;
+  }
   /** Already has a callout waiting to mature or be paid. */
   hasOpen(wallet: string, userHash: string): boolean {
     return this.db.prepare(`SELECT 1 FROM callouts

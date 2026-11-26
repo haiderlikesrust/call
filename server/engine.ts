@@ -102,7 +102,7 @@ export class Engine extends EventEmitter {
       id: hash(r.calloutId), callout_id: r.calloutId, wallet: r.wallet, user_hash: userHash,
       created_at: r.createdAt, seen_at: now, status: reason ? 'rejected' : 'maturing', reason,
       username: r.username || null, avatar: r.avatar, thesis: r.thesis || null, likes: r.likes, followers: r.followers, api_at: now,
-      min_balance: balance.toString(), supply: supply.toString(), score: reason ? 0 : score(balance, supply, r.followers, this.rules),
+      min_balance: balance.toString(), supply: supply.toString(), score: reason ? 0 : score(balance, supply, r.followers, this.rules, this.store.holdStreak(r.wallet, balance, now)),
     });
     this.emit('callout', hash(r.calloutId));
     this.emit('change');
@@ -139,7 +139,7 @@ export class Engine extends EventEmitter {
     if (followers < this.rules.minFollowers) return this.reject(c, 'low-followers');
     this.store.patch(c.id, {
       status: 'ready', ready_at: this.now(), followers, api_at: this.now(),
-      supply: supply.toString(), score: score(low, supply, followers, this.rules),
+      supply: supply.toString(), score: score(low, supply, followers, this.rules, this.store.holdStreak(c.wallet, low, c.seen_at)),
     });
     this.emit('change');
   }
@@ -224,7 +224,7 @@ export class Engine extends EventEmitter {
       const followers = stale ? await this.source.followers(c.wallet) : c.followers;
       if (followers === null) { this.reject(c, 'no-profile'); continue; }
       this.store.patch(c.id, {
-        min_balance: low.toString(), supply: supply.toString(), score: score(low, supply, followers, this.rules),
+        min_balance: low.toString(), supply: supply.toString(), score: score(low, supply, followers, this.rules, this.store.holdStreak(c.wallet, low, c.seen_at)),
         ...(stale ? { followers, api_at: this.now() } : {}),
       });
       checked.add(c.id);

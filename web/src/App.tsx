@@ -323,11 +323,12 @@ function Rules({ data }: { data: Snapshot }) {
       <div className="wrap section rules">
         <div className="rules-sum">
           <h2>The sum</h2>
-          <p className="formula"><span>pot</span> × <span>{r.maxPotShareBps / 100}%</span> × (<span>{Math.round(r.baseScore * 100)}%</span> + <span>{Math.round((1 - r.baseScore) * 100)}%</span> × <span>bag</span> × <span>reach</span>)</p>
+          <p className="formula"><span>pot</span> × <span>{r.maxPotShareBps / 100}%</span> × (<span>{Math.round(r.baseScore * 100)}%</span> + <span>{Math.round(r.bagWeight * 100)}%</span> × <span>bag</span> × <span>streak</span> + <span>{Math.round((1 - r.baseScore - r.bagWeight) * 100)}%</span> × <span>reach</span>)</p>
           <ul>
-            <li>Every callout that qualifies starts at <b>{Math.round(r.baseScore * 100)}%</b> of the maximum, so a small bag still earns. Bag and reach fill in the rest.</li>
+            <li>Every callout that qualifies starts at <b>{Math.round(r.baseScore * 100)}%</b> of the maximum, so a small bag still earns. Your bag adds up to {Math.round(r.bagWeight * 100)}% and your followers up to {Math.round((1 - r.baseScore - r.bagWeight) * 100)}%, each on its own.</li>
             <li><b>bag</b> climbs to full at {r.holdFullBps / 100}% of supply.</li>
-            <li><b>reach</b> is your pump.fun followers. It climbs to full at {compact(r.followersFull)}, on a log curve, so going from 100 to 1K counts as much as 1K to 10K.</li>
+            <li><b>streak</b> rewards holding. Each paid callout in a row where you kept at least the same bag grows the bag part {Math.round(r.holdStreakRate * 100)}%, compounding, up to {r.holdStreakCap}×. Sell below your last callout and it starts over.</li>
+            <li><b>reach</b> is your pump.fun followers. It climbs from {r.minFollowers} to full at {compact(r.followersFull)}, on a log curve, so going from 100 to 1K counts as much as 1K to 10K.</li>
             <li><b>pot</b> is the reward pool at the moment you are paid. Double the pool and every reward doubles; as it drains, rewards shrink with it. No callout can take more than {r.maxPotShareBps / 100}% of it before queue weight, or {(r.maxPotShareBps * r.agingCap) / 100}% after.</li>
             <li>Anything under {compact(r.minPayout)} $PUMP waits for a bigger pot instead of being sent as dust.</li>
           </ul>

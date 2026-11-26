@@ -15,27 +15,35 @@ export function holdFactor(balance: bigint, supply: bigint, r: Rules): number {
   return Math.min(1, share / (r.holdFullBps / 10_000)) ** r.holdExponent;
 }
 
-/** followFloor..1. Logarithmic: going 100 -> 1k is worth as much as 1k -> 10k. */
+/** 0..1, from 0 at minFollowers to 1 at followersFull. Logarithmic: every 10x more followers adds the same. */
 export function followFactor(followers: number, r: Rules): number {
-  const f = Math.max(0, Number.isFinite(followers) ? followers : 0);
-  const t = Math.min(1, Math.log10(1 + f) / Math.log10(1 + r.followersFull));
-  return r.followFloor + (1 - r.followFloor) * t;
+  const f = Number.isFinite(followers) ? followers : 0;
+  const lo = Math.max(1, r.minFollowers);
+  if (f <= lo) return 0;
+  if (r.followersFull <= lo) return 1;
+  return Math.min(1, Math.log(f / lo) / Math.log(r.followersFull / lo));
 }
 
 /** True when the bag and following clear the entry rules (min holding, min followers). */
 export const qualifies = (balance: bigint, supply: bigint, followers: number, r: Rules): boolean =>
   supply > 0n && balance > 0n && balance * 1_000_000n >= supply * BigInt(Math.round(r.minHoldBps * 100)) && followers >= r.minFollowers;
 
+/** 1..holdStreakCap. Compounds per rewarded callout in a row that kept the bag. */
+export const streakBoost = (streak: number, r: Rules): number =>
+  Math.min(r.holdStreakCap, (1 + r.holdStreakRate) ** Math.max(0, Math.floor(streak)));
+
 /**
- * 0..1. A qualifying callout starts at baseScore, so small holders still earn something worth having.
- * The rest is bag x reach, multiplicative on purpose: a bag without reach, or reach without a bag, adds little.
- * The base pays per callout, so splitting one bag across accounts earns more; the entry rules,
- * the hold window and the per-account cooldown are what limit that.
+ * 0..1, or 0 for a callout that doesn't qualify. base + bagWeight x bag x streak + the rest x reach:
+ * a small holder still earns the base, more followers raise the reward whatever the bag size, and
+ * holding the same bag from one callout to the next compounds the bag part. The total stays capped at 1.
+ * The base and reach pay per callout, so splitting one bag across accounts earns more; the entry rules,
+ * the hold window and the per-account cooldown are what limit that. Splitting also restarts the streak.
  */
-export function score(balance: bigint, supply: bigint, followers: number, r: Rules): number {
-  const raw = holdFactor(balance, supply, r) * followFactor(followers, r);
-  if (raw <= 0) return 0;
-  return qualifies(balance, supply, followers, r) ? r.baseScore + (1 - r.baseScore) * raw : raw;
+export function score(balance: bigint, supply: bigint, followers: number, r: Rules, streak = 0): number {
+  if (!qualifies(balance, supply, followers, r)) return 0;
+  const reachWeight = Math.max(0, 1 - r.baseScore - r.bagWeight);
+  const bagPart = r.bagWeight * holdFactor(balance, supply, r) * streakBoost(streak, r);
+  return Math.min(1, r.baseScore + bagPart + reachWeight * followFactor(followers, r));
 }
 
 export function aging(hoursQueued: number, r: Rules): number {
