@@ -46,9 +46,14 @@ export class DemoSource implements Source {
   readonly everyMs = 1000;
   private readonly w: DemoWorld;
   constructor(w: DemoWorld) { this.w = w; }
-  async callouts() {
-    return this.w.rows.map((r) => ({ calloutId: r.calloutId, wallet: r.wallet, createdAt: r.createdAt, thesis: r.thesis, likes: r.likes, username: r.username, avatar: r.avatar, followers: r.followers }));
+  private listed(r: Row): Listed {
+    return { calloutId: r.calloutId, wallet: r.wallet, createdAt: r.createdAt, thesis: r.thesis, likes: r.likes, username: r.username, avatar: r.avatar, followers: r.followers };
   }
+  async positions(page: number) {
+    const held = this.w.rows.filter((r) => (this.w.people.find((p) => p.wallet === r.wallet)?.bag ?? 0n) > 0n);
+    return { items: held.slice(page * 50, page * 50 + 50).map((r) => ({ listed: this.listed(r), row: r })), hasMore: held.length > (page + 1) * 50 };
+  }
+  async callouts() { return this.w.rows.map((r) => this.listed(r)); }
   async account(l: Listed) {
     const p = this.w.people.find((x) => x.wallet === l.wallet);
     return { calloutId: l.calloutId, wallet: l.wallet, userId: l.wallet, isDev: false, isGroup: false, username: l.username, avatar: null, followers: p?.followers ?? 100, isPumpUser: true, banned: false };

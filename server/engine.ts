@@ -2,12 +2,14 @@
 import { EventEmitter } from 'node:events';
 import { type Mode, type Rules } from './config.ts';
 import type { Chain, Outcome } from './chain.ts';
-import { type Account, type Row, type Source, toRow } from './pumpApi.ts';
+import { type Account, type Fed, type Listed, type Row, type Source, toRow } from './pumpApi.ts';
 import { drain, eligibility, reconcile, score, toUnits } from './rewards.ts';
 import { type Burn, type Callout, type Store, hash } from './store.ts';
 
 const HOUR = 3_600_000;
 const MAX_AGE = 24 * HOUR;
+/** A callout the feed should have shown by now. pump.fun lists a holder's callout within seconds; 5 min is slack. */
+const LATE = 5 * 60_000;
 const BATCH = 5;
 const MAX_ATTEMPTS = 5;
 
@@ -61,33 +63,69 @@ export class Engine extends EventEmitter {
 
   /** Holders at or above the minimum bag in the last holder read. */
   watching = 0;
+  /** Since when pump.fun's feed has been read with no gap longer than a minute; null after a gap. */
+  private coveredSince: number | null = null;
+  private lastFeed = 0;
 
   /**
-   * Reads every callout on the coin, then the holder list from the chain. Callouts from holders with at least
-   * the minimum bag (0.1% by default) go first, from the bottom up: smallest qualifying bag first, each judged
-   * on what pump.fun itself says about the callout and its author. When pump.fun does not answer, the callout
-   * is left for the next read (it stays listed for a day) rather than judged on gmgn's numbers. Everyone below
-   * the minimum is recorded and turned away, so buying in after calling out never counts.
-   * One unreadable wallet never holds up the others.
+   * One read. pump.fun's feed (current holders' callouts, newest first) is paged until it reaches a callout already
+   * recorded; `sweep` pages further regardless, in case a callout was slotted in below one. gmgn's list is added
+   * when it answers: it holds callouts the feed lacks, including non-holders, who are recorded and turned away.
+   *
+   * Callouts from holders with at least the minimum bag (0.1% by default) are judged first, smallest bag up, on
+   * pump.fun's data: the feed's own row, or the callout and account overview for one only gmgn has. When pump.fun
+   * does not answer, a callout waits for the next read (gmgn and the feed keep it listed for a day). Everyone
+   * below the minimum is recorded and turned away, so buying in after calling out never counts.
    */
-  async poll(): Promise<void> {
+  async poll(opts: { pages?: number; sweep?: boolean } = {}): Promise<void> {
+    const pages = opts.pages ?? 5;
     await this.guard('callouts', async () => {
-      const list = await this.source.callouts();
+      const now = this.now();
+      const items = new Map<string, Fed & { fed: boolean }>();
+      const keep = (l: Listed) => now - l.createdAt <= MAX_AGE && !this.store.callout(hash(l.calloutId));
+      let feedFailed: unknown = null;
+      try {
+        for (let n = 0; n < pages; n++) {
+          const { items: page, hasMore } = await this.source.positions(n);
+          let reached = false;
+          for (const it of page) {
+            if (this.store.callout(hash(it.listed.calloutId))) reached = true;
+            else if (keep(it.listed)) items.set(it.listed.calloutId, { ...it, fed: true });
+          }
+          const oldest = page.at(-1)?.listed.createdAt ?? 0;
+          if (!hasMore || page.length === 0 || now - oldest > MAX_AGE || (reached && !opts.sweep)) break;
+        }
+        this.coveredSince = this.coveredSince !== null && now - this.lastFeed <= 60_000 ? this.coveredSince : now;
+        this.lastFeed = now;
+      } catch (e) {
+        feedFailed = e;
+        this.coveredSince = null;
+      }
+      const listed = await this.source.callouts();
+      for (const l of listed ?? []) if (!items.has(l.calloutId) && keep(l)) items.set(l.calloutId, { listed: l, row: null, fed: false });
+      // Neither source answered: nothing to go on this time.
+      if (feedFailed && !listed) throw feedFailed;
+
       const supply = await this.chain.supply();
       // The holder list orders the work and spares an RPC read per non-holder. Qualifying bags are re-read on admission.
       const read = await this.guard('holder list', () => this.chain.holders());
       const all = read?.balances;
-      const now = this.now();
       const bag = (w: string) => all?.get(w) ?? 0n;
       const enough = (w: string, b: bigint) => !this.o.exclude.has(w) && !this.belowMin(b, supply);
       const holds = (w: string) => !all || enough(w, bag(w));
       if (all) this.watching = [...all].filter(([w, b]) => enough(w, b)).length;
-      const fresh = list
-        .filter((c) => now - c.createdAt <= MAX_AGE && !this.store.callout(hash(c.calloutId)))
-        .sort((a, b) => Number(holds(b.wallet)) - Number(holds(a.wallet)) || (bag(a.wallet) < bag(b.wallet) ? -1 : bag(a.wallet) > bag(b.wallet) ? 1 : 0) || a.createdAt - b.createdAt);
-      let failed: unknown = null;
-      for (const c of fresh) {
+      const todo = [...items.values()].sort((x, y) => {
+        const a = x.listed, b = y.listed;
+        return Number(holds(b.wallet)) - Number(holds(a.wallet)) || (bag(a.wallet) < bag(b.wallet) ? -1 : bag(a.wallet) > bag(b.wallet) ? 1 : 0) || a.createdAt - b.createdAt;
+      });
+
+      let failed: unknown = feedFailed;
+      for (const it of todo) {
         if (this.stopping) break;
+        const c = it.listed;
+        // Only in the feed, and only now, although the feed was being read when it was made: the wallet was not
+        // holding then (the feed lists holders only). That is calling out first and buying in after.
+        const late = it.fed && this.coveredSince !== null && this.coveredSince <= c.createdAt && now - c.createdAt > LATE;
         // Below the minimum in the holder list: turned away on that balance, but only if the list was read after
         // the callout. An older list can miss a buy made just before calling out, so that wallet is read again.
         let known = all && !holds(c.wallet) ? bag(c.wallet) : undefined;
@@ -95,23 +133,27 @@ export class Engine extends EventEmitter {
           try { known = await this.chain.holding(c.wallet); } catch (e) { failed = e; continue; }
           if (enough(c.wallet, known)) known = undefined;
         }
-        let a: Account | null = null;
-        if (known === undefined) {
+        let row = it.row;
+        if (!row && known === undefined && !late) {
+          let a: Account | null;
           try { a = await this.source.account(c); } catch (e) { failed = e; continue; }
           if (!a) continue; // gone from pump.fun: deleted before we got to it
+          row = toRow(c, a);
         }
-        await this.admit(toRow(c, a), known).catch((e) => { failed = e; });
+        await this.admit(row ?? toRow(c, null), known, late).catch((e) => { failed = e; });
       }
       if (failed) throw failed;
     });
   }
+  /** Slow pass over more of the feed, in case a callout was slotted in below one already recorded. */
+  sweep(): Promise<void> { return this.poll({ pages: 20, sweep: true }); }
 
-  async admit(r: Row, known?: bigint): Promise<void> {
+  async admit(r: Row, known?: bigint, late = false): Promise<void> {
     const now = this.now();
     if (now - r.createdAt > MAX_AGE) return;
     const [balance, supply] = await Promise.all([known ?? this.chain.holding(r.wallet), this.chain.supply()]);
     const userHash = hash(r.userId);
-    const reason = eligibility(
+    const reason = late ? 'late' : eligibility(
       { ...r, balance, supply },
       { start: this.o.start(), now, excluded: this.o.exclude.has(r.wallet), lastRewardedAt: this.store.lastRewardedAt(r.wallet, userHash), hasOpen: this.store.hasOpen(r.wallet, userHash) },
       this.rules,

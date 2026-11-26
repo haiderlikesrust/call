@@ -72,6 +72,7 @@ function runReal(): void {
     store.set('start', String(config.rewardsStart ? Date.parse(config.rewardsStart) : Date.now()));
   }
   loop(() => source.everyMs, () => engine.poll());
+  loop(() => 300_000, () => engine.sweep());
   loop(() => 20_000, () => engine.mature());
   let lastClaim = 0;
   loop(() => 10_000, async () => {

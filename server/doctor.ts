@@ -41,7 +41,8 @@ if (config.coinMint) await check('holders and callouts', async () => {
   const min = (supply * BigInt(Math.round(rules.minHoldBps * 100))) / 1_000_000n;
   const big = [...all].filter(([, b]) => b >= min).sort((a, b) => (b[1] > a[1] ? 1 : -1));
   const api = new LiveSource();
-  const list = await api.callouts();
+  const { items } = await api.positions(0);
+  const list = (await api.callouts()) ?? [];
   const from = new Set(big.map(([w]) => w));
   const mine = list.filter((c) => from.has(c.wallet));
   let pump = 'nothing to look up yet';
@@ -49,7 +50,8 @@ if (config.coinMint) await check('holders and callouts', async () => {
     try { const a = await api.account(mine[0]); pump = a ? `answers (${a.username}: ${a.followers} followers)` : 'says that callout is deleted'; }
     catch (e) { pump = `not answering right now (${e instanceof Error ? e.message : e}); callouts wait until it does`; }
   }
-  return `${all.size} holders, ${big.length} at or above the minimum; gmgn lists ${list.length} callouts in the last day, ${mine.length} from qualifying holders; pump.fun ${pump}`;
+  const fed = items.filter((f) => from.has(f.listed.wallet)).length;
+  return `${all.size} holders, ${big.length} at or above the minimum; pump.fun feed: ${items.length} holder callouts on page 1, ${fed} from qualifying holders; gmgn backup: ${api.backup ? 'off (' + api.backup + ')' : list.length + ' callouts in the last day'}; account lookups ${pump}`;
 });
 console.log(`  rules ${rules.rewardBps / 100}/${100 - rules.rewardBps / 100} split, max ${rules.maxPotShareBps / 100}% of pot per callout`);
 process.exit(bad ? 1 : 0);

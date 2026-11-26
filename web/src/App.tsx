@@ -6,7 +6,7 @@ import { ago, clock, compact, fmt, pct, short, useEased, useLive, useNow, type P
 
 const WHY: Record<string, string> = {
   'before-start': 'made before rewards began', excluded: 'team wallet', dev: 'the dev cannot earn', group: 'squad callout',
-  'not-pump-user': 'no pump.fun profile', 'low-quality': 'flagged low quality', 'not-holder': 'holds none', 'low-holding': 'bag too small',
+  'not-pump-user': 'no pump.fun profile', 'low-quality': 'flagged low quality', 'not-holder': 'holds none', 'low-holding': 'bag too small', late: 'called out before buying',
   'low-followers': 'too few followers', 'new-account': 'account too new', rehearsal: 'made before launch', cooldown: 'called out too soon', 'in-line': 'already has one in line', sold: 'sold before payout',
   deleted: 'callout removed', 'payout-failed': 'transfer failed', 'no-profile': 'profile gone', expired: 'expired in queue',
 };
