@@ -74,20 +74,27 @@ export class Engine extends EventEmitter {
     await this.guard('callouts', async () => {
       const list = await this.source.callouts();
       const supply = await this.chain.supply();
-      // The holder list only orders the work and saves profile lookups; every bag is re-read on admission.
-      const all = await this.guard('holder list', () => this.chain.holders());
+      // The holder list orders the work and spares an RPC read per non-holder. Qualifying bags are re-read on admission.
+      const read = await this.guard('holder list', () => this.chain.holders());
+      const all = read?.balances;
       const now = this.now();
       const bag = (w: string) => all?.get(w) ?? 0n;
-      const holds = (w: string) => !this.o.exclude.has(w) && (!all || !this.belowMin(bag(w), supply));
-      if (all) this.watching = [...all].filter(([w]) => holds(w)).length;
+      const enough = (w: string, b: bigint) => !this.o.exclude.has(w) && !this.belowMin(b, supply);
+      const holds = (w: string) => !all || enough(w, bag(w));
+      if (all) this.watching = [...all].filter(([w, b]) => enough(w, b)).length;
       const fresh = list
         .filter((c) => now - c.createdAt <= MAX_AGE && !this.store.callout(hash(c.calloutId)))
         .sort((a, b) => Number(holds(b.wallet)) - Number(holds(a.wallet)) || (bag(a.wallet) < bag(b.wallet) ? -1 : bag(a.wallet) > bag(b.wallet) ? 1 : 0) || a.createdAt - b.createdAt);
       let failed: unknown = null;
       for (const c of fresh) {
         if (this.stopping) break;
-        // Below the minimum in a fresh holder read: turned away on that balance, without another RPC call each.
-        const known = all && !holds(c.wallet) ? bag(c.wallet) : undefined;
+        // Below the minimum in the holder list: turned away on that balance, but only if the list was read after
+        // the callout. An older list can miss a buy made just before calling out, so that wallet is read again.
+        let known = all && !holds(c.wallet) ? bag(c.wallet) : undefined;
+        if (known !== undefined && read!.at < c.createdAt) {
+          try { known = await this.chain.holding(c.wallet); } catch (e) { failed = e; continue; }
+          if (enough(c.wallet, known)) known = undefined;
+        }
         let a: Account | null = null;
         if (known === undefined) {
           try { a = await this.source.account(c); } catch (e) { failed = e; continue; }

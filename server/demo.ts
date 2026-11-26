@@ -64,7 +64,7 @@ export class DemoChain implements Chain {
   async treasuryBalance() { return this.w.treasury; }
   async supply() { return this.w.supplyNow; }
   async holding(wallet: string) { return this.w.people.find((p) => p.wallet === wallet)?.bag ?? 0n; }
-  async holders() { return new Map(this.w.people.filter((p) => p.bag > 0n).map((p) => [p.wallet, p.bag])); }
+  async holders() { return { at: Date.now(), balances: new Map(this.w.people.filter((p) => p.bag > 0n).map((p) => [p.wallet, p.bag])) }; }
   async solOk() { return true; }
   async claim() { return null; }
   async resolve(): Promise<Outcome> { return 'confirmed'; }

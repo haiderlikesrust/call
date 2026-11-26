@@ -37,7 +37,7 @@ if (config.coinMint) {
 }
 if (config.coinMint) await check('holders and callouts', async () => {
   const chain = new SolanaChain();
-  const [all, supply] = await Promise.all([chain.holders(), chain.supply()]);
+  const [{ balances: all }, supply] = await Promise.all([chain.holders(), chain.supply()]);
   const min = (supply * BigInt(Math.round(rules.minHoldBps * 100))) / 1_000_000n;
   const big = [...all].filter(([, b]) => b >= min).sort((a, b) => (b[1] > a[1] ? 1 : -1));
   const api = new LiveSource();

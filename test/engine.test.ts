@@ -15,7 +15,7 @@ function rig() {
   const bags = new Map<string, bigint>();
   const w = {
     treasury: 0n, out: 'confirmed' as Outcome, paid: new Map<string, bigint>(), sends: 0, deleted: new Set<string>(),
-    followers: new Map<string, number>(), rows: [] as Row[], resolveOut: 'pending' as Outcome, burned: 0n, bad: new Set<string>(), profiled: [] as string[], down: false,
+    followers: new Map<string, number>(), rows: [] as Row[], resolveOut: 'pending' as Outcome, burned: 0n, bad: new Set<string>(), profiled: [] as string[], down: false, holdersAt: null as number | null, snap: null as Map<string, bigint> | null, reads: 0,
   };
   const apply: (() => void)[] = [];
   const latest = (a: string) => w.rows.find((x) => x.wallet === a);
@@ -36,8 +36,8 @@ function rig() {
   const chain: Chain = {
     canSign: true,
     treasuryBalance: async () => w.treasury, supply: async () => SUPPLY,
-    holding: async (a) => { if (w.bad.has(a)) throw new Error('rpc'); return bags.get(a) ?? 0n; },
-    holders: async () => new Map([...bags].filter(([, b]) => b > 0n)),
+    holding: async (a) => { w.reads++; if (w.bad.has(a)) throw new Error('rpc'); return bags.get(a) ?? 0n; },
+    holders: async () => ({ at: w.holdersAt ?? now, balances: w.snap ?? new Map([...bags].filter(([, b]) => b > 0n)) }),
     solOk: async () => true, claim: async () => null,
     pay: async (items, onSigned: OnSigned) => {
       w.sends++;
@@ -259,6 +259,35 @@ test('a callout deleted before it is read is skipped', async () => {
   const a = r.call('A'); r.w.deleted.add(r.w.rows[0]!.calloutId);
   await e.poll();
   assert.equal(r.store.callout(a), undefined);
+});
+
+test('a buy just before calling out counts even when the holder list was read before the buy', async () => {
+  const r = rig(); const e = r.make();
+  // The cached holder list was read 20s ago, before A bought in; A then called out 1s ago.
+  r.w.holdersAt = e.now() - 20_000; r.w.snap = new Map([['A', SUPPLY / 10_000n]]);
+  const a = r.call('A', SUPPLY / 200n);
+  await e.poll();
+  assert.equal(r.store.callout(a)!.status, 'maturing');
+});
+
+test('a holder list read after the callout is trusted for small bags, with no extra RPC read', async () => {
+  const r = rig(); const e = r.make();
+  const t = r.call('TINY', SUPPLY / 10_000n);
+  r.w.reads = 0;
+  await e.poll();
+  assert.equal(r.store.callout(t)!.reason, 'low-holding');
+  assert.equal(r.w.reads, 0);
+});
+
+test('a stale holder list still turns away a wallet that really is small, after reading it again', async () => {
+  const r = rig(); const e = r.make();
+  r.w.holdersAt = e.now() - 20_000;
+  const t = r.call('TINY', SUPPLY / 10_000n);
+  r.w.reads = 0;
+  await e.poll();
+  assert.equal(r.store.callout(t)!.reason, 'low-holding');
+  assert.equal(r.w.reads, 1);
+  assert.deepEqual(r.w.profiled, [], 'no pump.fun lookup for a small bag');
 });
 
 test('a callout older than a day is not admitted', async () => {
