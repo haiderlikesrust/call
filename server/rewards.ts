@@ -128,7 +128,9 @@ export interface Candidate {
 
 export type Reject =
   | 'before-start' | 'excluded' | 'dev' | 'group' | 'not-pump-user' | 'low-quality'
-  | 'not-holder' | 'low-holding' | 'low-followers' | 'new-account' | 'in-line' | 'cooldown';
+  | 'not-holder' | 'low-holding' | 'low-followers' | 'new-account' | 'in-line' | 'cooldown'
+  /** Called out before buying in: the callout only reached pump.fun's holder feed after the buy. */
+  | 'late';
 
 export function eligibility(
   c: Candidate,

@@ -14,13 +14,14 @@ import { PUMP_DECIMALS, PUMP_MINT, config } from './config.ts';
 
 export type Outcome = 'confirmed' | 'failed' | 'expired' | 'pending';
 export type OnSigned = (sig: string, lastValid: number) => void;
+export interface Holders { at: number; balances: Map<string, bigint> }
 export interface Chain {
   readonly canSign: boolean;
   treasuryBalance(): Promise<bigint>;
   supply(): Promise<bigint>;
   holding(wallet: string): Promise<bigint>;
-  /** Every wallet holding the coin, with its balance. */
-  holders(): Promise<Map<string, bigint>>;
+  /** Every wallet holding the coin, with its balance, and when that read started (ms). */
+  holders(): Promise<Holders>;
   solOk(): Promise<boolean>;
   claim(): Promise<string | null>;
   pay(items: { wallet: string; amount: bigint }[], onSigned: OnSigned): Promise<Outcome>;
@@ -42,7 +43,7 @@ export class SolanaChain implements Chain {
   readonly coin = new PublicKey(config.coinMint);
   private coinInfo: { program: PublicKey; decimals: number } | null = null;
   private supplyCache = { at: 0, v: 0n };
-  private holderCache = { at: 0, v: new Map<string, bigint>() };
+  private holderCache: Holders = { at: 0, balances: new Map() };
 
   get canSign() { return this.signer !== null && config.live; }
   private me(): Keypair {
@@ -76,9 +77,11 @@ export class SolanaChain implements Chain {
     return res.value.reduce((n, a) => n + BigInt(a.account.data.parsed.info.tokenAmount.amount), 0n);
   }
   /** One read of every token account for the coin. Program-owned accounts (bonding curve, pool) are left out. */
-  async holders() {
-    if (Date.now() - this.holderCache.at < 30_000) return this.holderCache.v;
+  async holders(): Promise<Holders> {
+    if (Date.now() - this.holderCache.at < 30_000) return this.holderCache;
     const { program } = await this.coinMeta();
+    // Stamped when the read starts: anything that happened after this may be missing from it.
+    const at = Date.now();
     const accs = await this.conn.getProgramAccounts(program, {
       filters: [{ memcmp: { offset: 0, bytes: this.coin.toBase58() } }],
       dataSlice: { offset: 32, length: 40 },
@@ -93,8 +96,8 @@ export class SolanaChain implements Chain {
       const w = owner.toBase58();
       out.set(w, (out.get(w) ?? 0n) + amount);
     }
-    this.holderCache = { at: Date.now(), v: out };
-    return out;
+    this.holderCache = { at, balances: out };
+    return this.holderCache;
   }
   async solOk() {
     return !!this.treasury && (await this.conn.getBalance(this.treasury)) >= config.minSolReserve * 1e9;

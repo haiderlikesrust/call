@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { rules as base } from '../server/config.ts';
 import type { Chain, OnSigned, Outcome } from '../server/chain.ts';
 import { Engine } from '../server/engine.ts';
-import { parseDetail, parseListed, parseOverview, toRow, type Row, type Source } from '../server/pumpApi.ts';
+import { parseDetail, parseListed, parseOverview, parsePosition, toRow, type Row, type Source } from '../server/pumpApi.ts';
 import { Store, hash } from '../server/store.ts';
 import { toUnits } from '../server/rewards.ts';
 
@@ -15,14 +15,24 @@ function rig() {
   const bags = new Map<string, bigint>();
   const w = {
     treasury: 0n, out: 'confirmed' as Outcome, paid: new Map<string, bigint>(), sends: 0, deleted: new Set<string>(),
-    followers: new Map<string, number>(), rows: [] as Row[], resolveOut: 'pending' as Outcome, burned: 0n, bad: new Set<string>(), profiled: [] as string[], down: false,
+    followers: new Map<string, number>(), rows: [] as Row[], resolveOut: 'pending' as Outcome, burned: 0n, bad: new Set<string>(), profiled: [] as string[], down: false, holdersAt: null as number | null, snap: null as Map<string, bigint> | null, reads: 0,
+    gmgnDown: false, noProfile: new Set<string>(), readOrder: [] as string[],
   };
   const apply: (() => void)[] = [];
-  const latest = (a: string) => w.rows.find((x) => x.wallet === a);
+  const listed = (x: Row) => ({ calloutId: x.calloutId, wallet: x.wallet, createdAt: x.createdAt, thesis: x.thesis, likes: x.likes, username: x.username, avatar: x.avatar, followers: x.followers });
   const source: Source = {
     health: { ok: true, note: '', remaining: null },
     everyMs: 10_000,
-    callouts: async () => w.rows.map((x) => ({ calloutId: x.calloutId, wallet: x.wallet, createdAt: x.createdAt, thesis: x.thesis, likes: x.likes, username: x.username, avatar: x.avatar, followers: x.followers })),
+    // pump.fun's feed lists current holders' callouts only, newest first, with the author's profile.
+    positions: async (page) => {
+      if (w.down) throw new Error('pump.fun 403 Client not allowed');
+      const held = w.rows.filter((x) => (bags.get(x.wallet) ?? 0n) > 0n && !w.deleted.has(x.calloutId));
+      const items = held.slice(page * 50, page * 50 + 50).map((x) => ({
+        listed: listed(x), row: w.noProfile.has(x.wallet) ? null : { ...x, followers: w.followers.get(x.wallet) ?? x.followers },
+      }));
+      return { items, hasMore: held.length > (page + 1) * 50 };
+    },
+    callouts: async () => (w.gmgnDown ? null : w.rows.map(listed)),
     account: async (l) => {
       w.profiled.push(l.wallet);
       if (w.down) throw new Error('pump.fun 403 Client not allowed');
@@ -36,8 +46,8 @@ function rig() {
   const chain: Chain = {
     canSign: true,
     treasuryBalance: async () => w.treasury, supply: async () => SUPPLY,
-    holding: async (a) => { if (w.bad.has(a)) throw new Error('rpc'); return bags.get(a) ?? 0n; },
-    holders: async () => new Map([...bags].filter(([, b]) => b > 0n)),
+    holding: async (a) => { w.reads++; w.readOrder.push(a); if (w.bad.has(a)) throw new Error('rpc'); return bags.get(a) ?? 0n; },
+    holders: async () => ({ at: w.holdersAt ?? now, balances: w.snap ?? new Map([...bags].filter(([, b]) => b > 0n)) }),
     solOk: async () => true, claim: async () => null,
     pay: async (items, onSigned: OnSigned) => {
       w.sends++;
@@ -212,7 +222,7 @@ test('qualifying holders go first, smallest bag up; small bags and excluded wall
   const big = r.call('BIG', SUPPLY / 20n); r.call('SMALL', SUPPLY / 1000n); r.call('MID', SUPPLY / 100n);
   const tiny = r.call('TINY', SUPPLY / 10_000n); const none = r.call('NONE', 0n); const dev = r.call('DEV');
   await e.poll();
-  assert.deepEqual(r.w.profiled, ['SMALL', 'MID', 'BIG'], 'only qualifying holders are looked up, smallest first');
+  assert.deepEqual(r.w.readOrder, ['SMALL', 'MID', 'BIG'], 'only qualifying holders are read again, smallest first');
   assert.equal(e.watching, 3);
   assert.equal(r.store.callout(big)!.status, 'maturing');
   assert.equal(r.store.callout(tiny)!.reason, 'low-holding');
@@ -261,6 +271,87 @@ test('a callout deleted before it is read is skipped', async () => {
   assert.equal(r.store.callout(a), undefined);
 });
 
+test('a buy just before calling out counts even when the holder list was read before the buy', async () => {
+  const r = rig(); const e = r.make();
+  // The cached holder list was read 20s ago, before A bought in; A then called out 1s ago.
+  r.w.holdersAt = e.now() - 20_000; r.w.snap = new Map([['A', SUPPLY / 10_000n]]);
+  const a = r.call('A', SUPPLY / 200n);
+  await e.poll();
+  assert.equal(r.store.callout(a)!.status, 'maturing');
+});
+
+test('a holder list read after the callout is trusted for small bags, with no extra RPC read', async () => {
+  const r = rig(); const e = r.make();
+  const t = r.call('TINY', SUPPLY / 10_000n);
+  r.w.reads = 0;
+  await e.poll();
+  assert.equal(r.store.callout(t)!.reason, 'low-holding');
+  assert.equal(r.w.reads, 0);
+});
+
+test('a stale holder list still turns away a wallet that really is small, after reading it again', async () => {
+  const r = rig(); const e = r.make();
+  r.w.holdersAt = e.now() - 20_000;
+  const t = r.call('TINY', SUPPLY / 10_000n);
+  r.w.reads = 0;
+  await e.poll();
+  assert.equal(r.store.callout(t)!.reason, 'low-holding');
+  assert.equal(r.w.reads, 1);
+  assert.deepEqual(r.w.profiled, [], 'no pump.fun lookup for a small bag');
+});
+
+test('the pump.fun feed alone is enough when gmgn is down, with no extra lookups', async () => {
+  const r = rig(); const e = r.make();
+  r.w.gmgnDown = true;
+  const a = r.call('A', SUPPLY / 200n, { followers: 300, accountCreatedAt: e.now() - 5 * 86_400_000 });
+  await e.poll();
+  const c = r.store.callout(a)!;
+  assert.equal(c.status, 'maturing');
+  assert.equal(c.followers, 300);
+  assert.deepEqual(r.w.profiled, [], 'the feed row carries everything');
+  assert.equal(e.problems.size, 0, 'gmgn being down is not a problem for the site');
+});
+
+test('a feed row without a profile is judged on the account lookup instead', async () => {
+  const r = rig(); const e = r.make();
+  r.w.gmgnDown = true; r.w.noProfile.add('A');
+  const a = r.call('A');
+  await e.poll();
+  assert.deepEqual(r.w.profiled, ['A']);
+  assert.equal(r.store.callout(a)!.status, 'maturing');
+});
+
+test('calling out first and buying in later is caught while gmgn is down', async () => {
+  const r = rig(); const e = r.make();
+  r.w.gmgnDown = true;
+  await e.poll(); r.tick(10_000); await e.poll();
+  const a = r.call('A', 0n); // called out holding nothing: the feed does not list it
+  for (let i = 0; i < 36; i++) { r.tick(10_000); await e.poll(); }
+  r.bags.set('A', SUPPLY / 200n); // bought six minutes later
+  await e.poll();
+  assert.equal(r.store.callout(a)!.reason, 'late');
+});
+
+test('a gap in reading the feed never makes a callout look late', async () => {
+  const r = rig(); const e = r.make();
+  r.w.gmgnDown = true;
+  await e.poll(); r.tick(10_000); await e.poll();
+  const a = r.call('A', 0n);
+  r.tick(2 * MIN); await e.poll(); // the feed went unread for two minutes, so A's absence proves nothing
+  r.tick(5 * MIN); r.bags.set('A', SUPPLY / 200n);
+  await e.poll();
+  assert.equal(r.store.callout(a)!.status, 'maturing');
+});
+
+test('with gmgn up, a non-holder is recorded the moment they call out', async () => {
+  const r = rig(); const e = r.make();
+  const a = r.call('A', 0n);
+  await e.poll();
+  assert.equal(r.store.callout(a)!.reason, 'not-holder');
+  r.bags.set('A', SUPPLY / 200n); r.tick(6 * MIN); await e.poll();
+  assert.equal(r.store.callout(a)!.reason, 'not-holder');
+});
+
 test('a callout older than a day is not admitted', async () => {
   const r = rig(); const e = r.make();
   const old = r.call('A', SUPPLY / 200n, { createdAt: e.now() - 25 * 60 * MIN });
@@ -278,6 +369,26 @@ test('API data is purged after 24h but the ledger survives', async () => {
   assert.deepEqual([c.username, c.avatar, c.thesis, c.followers, c.callout_id], [null, null, null, null, null]);
   assert.equal(c.status, 'paid');
   assert.ok(BigInt(c.amount!) > 0n);
+});
+
+test('pump.fun feed rows are parsed defensively', () => {
+  const mint = '4VDjNNkemze5ZX5MWTzphtw6AtQdrJL2XqqPkt19pump';
+  const wallet = '7LX573px9mMa5hcksZAztAZV38BEf9bXnHz1n6nTh8NY';
+  // Trimmed from a real /mint-positions answer.
+  const pos = { coinMint: mint, userId: '5fe20ce6-b8a7-425f-b3b5-b352f53b6cce', userName: 'Pukulan24', profileImage: 'https://socialimages.pump.fun/a.webp', walletAddress: wallet, accountKind: 'person', amountHeld: 4354448.07, lowQuality: false,
+    callout: { calloutId: '550edc00-09c5-4e39-a55c-3fbe6f0c8e3b', thesis: 'Indian-mas?', calloutTimestamp: '2026-11-26T06:11:07.779Z', likes: 1, authorIsDev: false },
+    profile: { userId: '5fe20ce6-b8a7-425f-b3b5-b352f53b6cce', username: 'Pukulan24', followerCount: 172, createdAt: '2026-10-01T00:00:00.000Z', kind: 'person', isPumpUser: true } };
+  const f = parsePosition(pos, mint)!;
+  assert.equal(f.listed.calloutId, '550edc00-09c5-4e39-a55c-3fbe6f0c8e3b');
+  assert.deepEqual([f.row!.userId, f.row!.followers, f.row!.accountCreatedAt, f.row!.createdAt, f.row!.isPumpUser, f.row!.isDev], ['5fe20ce6-b8a7-425f-b3b5-b352f53b6cce', 172, Date.parse('2026-10-01T00:00:00.000Z'), Date.parse('2026-11-26T06:11:07.779Z'), true, false]);
+  assert.equal(parsePosition({ ...pos, profile: undefined }, mint)!.row, null, 'no profile: followers unknown, so no row');
+  assert.equal(parsePosition({ ...pos, coinMint: 'other' }, mint), null);
+  assert.equal(parsePosition({ ...pos, callout: null }, mint), null);
+  assert.equal(parsePosition({ ...pos, walletAddress: '0xabc' }, mint), null);
+  assert.equal(parsePosition({ ...pos, lowQuality: true }, mint)!.row!.lowQuality, true);
+  assert.equal(parsePosition({ ...pos, accountKind: 'group' }, mint)!.row!.isGroup, true);
+  assert.equal(parsePosition({ ...pos, callout: { ...pos.callout, authorIsDev: true } }, mint)!.row!.isDev, true);
+  assert.equal(parsePosition({ ...pos, userId: null }, mint)!.row!.isPumpUser, false);
 });
 
 test('API responses are parsed defensively', () => {

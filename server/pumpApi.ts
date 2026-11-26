@@ -1,8 +1,10 @@
-// Where callouts come from. gmgn lists every callout on the coin in one cursor-paged request, which is how new
-// ones are found. Everything a reward depends on then comes from pump.fun itself: the callout (dev flag, account
-// id, person or squad) and the account overview (followers, pump user, banned). gmgn's follower counts are often
-// stale or zero, so they are never used to judge anyone. Both sites only answer browser-like clients, so requests
-// carry Chrome's TLS fingerprint (impit).
+// Where callouts come from.
+// - pump.fun's mint-positions feed is the main source: every current holder's callout on the coin, newest first,
+//   with everything a reward depends on (dev flag, low quality, account id, squad, followers, account age).
+// - gmgn is the backup: it lists every callout on the coin, holders or not, so it catches callouts the feed lacks
+//   and sees non-holders the moment they call out. It is skipped whenever it does not answer. Its follower counts
+//   are often stale, so a callout only gmgn has is judged on pump.fun's /callout/{id} and account overview.
+// Both sites only answer browser-like clients, so requests carry Chrome's TLS fingerprint (impit).
 import { Impit } from 'impit';
 import { config } from './config.ts';
 
@@ -19,9 +21,14 @@ export interface Overview { followers: number; isPumpUser: boolean; banned: bool
 /** What pump.fun says about a callout and its author: everything a reward depends on. */
 export type Account = Detail & Pick<Overview, 'followers' | 'isPumpUser' | 'banned'>;
 
+/** A callout from pump.fun's feed. `row` is complete when the feed carried the author's profile. */
+export interface Fed { listed: Listed; row: Row | null }
+
 export interface Source {
-  /** Every callout on the coin from the last day, newest first. */
-  callouts(): Promise<Listed[]>;
+  /** pump.fun's feed: current holders' callouts, newest first, 50 a page. Throws when pump.fun does not answer. */
+  positions(page: number): Promise<{ items: Fed[]; hasMore: boolean }>;
+  /** gmgn: every callout on the coin from the last day, newest first; null while gmgn is not answering. */
+  callouts(): Promise<Listed[] | null>;
   /** null: the callout is gone from pump.fun. Throws when pump.fun does not answer; ask again later. */
   account(l: Listed): Promise<Account | null>;
   /** False once the callout is gone from pump.fun. Throws when pump.fun does not answer. */
@@ -57,6 +64,27 @@ export function parseListed(it: any, coinMint: string): Listed | null {
     username: text(it.author.name, 40), avatar: https(it.author.avatar), followers: Number(it.author.followers) || 0,
   };
 }
+/** One position from pump.fun's `/mint-positions` feed, read with includeProfile=true. */
+export function parsePosition(p: any, coinMint: string): Fed | null {
+  const c = p?.callout;
+  const wallet = p?.walletAddress;
+  if (!c || !UUID.test(c.calloutId ?? '') || p.coinMint !== coinMint || !BASE58.test(wallet ?? '')) return null;
+  const createdAt = when(c.calloutTimestamp);
+  if (!createdAt) return null;
+  const pr = p.profile;
+  const listed: Listed = {
+    calloutId: c.calloutId, wallet, createdAt, thesis: text(c.thesis, 280), likes: Number(c.likes) || 0,
+    username: text(p.userName, 40), avatar: https(p.profileImage), followers: Number(pr?.followerCount) || 0,
+  };
+  // Without the profile the follower count is unknown: leave it to the account lookup rather than guess.
+  const row: Row | null = pr ? {
+    calloutId: c.calloutId, wallet, userId: UUID.test(p.userId ?? '') ? p.userId : wallet, username: listed.username, avatar: listed.avatar,
+    thesis: listed.thesis, likes: listed.likes, followers: Number(pr.followerCount) || 0, accountCreatedAt: when(pr.createdAt) || null, createdAt,
+    isDev: c.authorIsDev === true, isGroup: p.accountKind === 'group' || pr.kind === 'group',
+    isPumpUser: UUID.test(p.userId ?? '') && pr.isPumpUser !== false, lowQuality: p.lowQuality === true,
+  } : null;
+  return { listed, row };
+}
 /** pump.fun's `/callout/{id}`. Only trusted when it is the same callout, on this coin, by this wallet. */
 export function parseDetail(body: any, l: Listed, coinMint: string): Detail | null {
   const c = body?.callout;
@@ -77,9 +105,9 @@ export function parseOverview(body: any, wallet: string): Overview | null {
   };
 }
 /**
- * A null account is only ever passed for callouts turned away on the holder list alone (not a holder, too small,
- * excluded): gmgn's details are then shown, and nothing about them decides a reward. pump.fun has no account
- * age, so MIN_ACCOUNT_AGE_DAYS cannot apply.
+ * For a callout only gmgn has. A null account is only ever passed for callouts turned away on the holder list
+ * alone (not a holder, too small, excluded, late): gmgn's details are then shown and decide nothing. The account
+ * lookups carry no account date, so MIN_ACCOUNT_AGE_DAYS applies to callouts from the holder feed only.
  */
 export function toRow(l: Listed, a: Account | null): Row {
   return {
@@ -111,21 +139,23 @@ const GMGN = { ...BROWSER, referer: 'https://gmgn.ai/' };
 
 export class LiveSource implements Source {
   health = { ok: true, note: 'starting', remaining: null as number | null };
-  readonly everyMs = config.gmgnPollMs;
-  // pump.fun allows 60 a minute on /callout/{id}; the overview states no limit, so it gets a cautious 30.
-  private readonly lanes = { gmgn: new Lane(40), callout: new Lane(50), overview: new Lane(30) };
+  readonly everyMs = config.pollMs;
+  // pump.fun allows 60 a minute on the feed; the overview states no limit, so it gets a cautious 30.
+  private readonly lanes = { positions: new Lane(50), gmgn: new Lane(40), callout: new Lane(50), overview: new Lane(30) };
+  /** Why gmgn was last skipped, or null while it answers. */
+  backup: string | null = null;
   /** One reused connection: a steady browser-like client, not a new handshake per call. */
   private http = new Impit(IMPIT);
   private refused = 0;
   private readonly overviews = new Map<string, { at: number; o: Overview }>();
 
   /**
-   * pump.fun calls never queue behind a pause it asked for: they fail at once and the caller asks again on its
-   * next round, so one slow site cannot stall intake. gmgn calls wait their turn.
+   * Per-callout pump.fun lookups never queue behind a pause it asked for: they fail at once and the caller asks
+   * again on its next round, so one slow site cannot stall intake. Feed and gmgn reads wait their turn.
    */
   private async get(lane: keyof LiveSource['lanes'], url: string, headers: Record<string, string>): Promise<{ status: number; body: any }> {
     const l = this.lanes[lane];
-    if (lane !== 'gmgn' && l.wait() > 2_000) throw new Error(`pump.fun ${lane}: pausing ${Math.ceil(l.wait() / 1000)}s`);
+    if ((lane === 'callout' || lane === 'overview') && l.wait() > 2_000) throw new Error(`pump.fun ${lane}: pausing ${Math.ceil(l.wait() / 1000)}s`);
     await l.turn();
     const res = await this.http.fetch(url, { headers });
     if (res.headers.get('x-ratelimit-remaining') === '0') l.hold((Number(res.headers.get('x-ratelimit-reset')) || 60) * 1000);
@@ -149,6 +179,20 @@ export class LiveSource implements Source {
     return { status: res.status, body };
   }
 
+  async positions(page: number): Promise<{ items: Fed[]; hasMore: boolean }> {
+    try {
+      const q = new URLSearchParams({ sortBy: 'LATEST', withThesis: 'true', includeProfile: 'true', updatesLimit: '0', pageSize: '50', page: String(page) });
+      const { body } = await this.get('positions', `${config.pumpFrontendBase}/mint-positions/${config.coinMint}?${q}`, PUMP);
+      if (!Array.isArray(body?.positions)) throw new Error('pump.fun feed: unexpected answer');
+      const items = body.positions.map((p: any) => parsePosition(p, config.coinMint)).filter((x: Fed | null): x is Fed => x !== null);
+      this.health = { ...this.health, ok: true, note: this.backup ? `live; gmgn backup off (${this.backup})` : 'live' };
+      return { items, hasMore: body.hasMore === true && body.positions.length > 0 };
+    } catch (e) {
+      this.health = { ...this.health, ok: false, note: e instanceof Error ? e.message : String(e) };
+      throw e;
+    }
+  }
+
   async callouts() {
     try {
       const out: Listed[] = [];
@@ -166,11 +210,14 @@ export class LiveSource implements Source {
         cursor = typeof body.data.next_cursor === 'string' ? body.data.next_cursor : '';
         if (!cursor || body.data.list.length === 0 || Date.now() - oldest > DAY) break;
       }
-      this.health = { ...this.health, ok: true, note: 'live' };
+      if (this.backup) console.log('[gmgn] answering again');
+      this.backup = null;
       return out;
     } catch (e) {
-      this.health = { ...this.health, ok: false, note: e instanceof Error ? e.message : String(e) };
-      throw e;
+      const why = (e instanceof Error ? e.message : String(e)).split(/\r?\n/)[0]!.slice(0, 120);
+      if (this.backup === null) console.error('[gmgn] backup off:', why);
+      this.backup = why;
+      return null;
     }
   }
 

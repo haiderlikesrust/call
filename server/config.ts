@@ -35,7 +35,7 @@ export const rules = {
   /** pump.fun followers at which the follower factor is maxed. It starts from 0 at minFollowers. */
   followersFull: num('FOLLOWERS_FULL', 10_000),
   minFollowers: num('MIN_FOLLOWERS', 10),
-  /** 0 = new accounts can earn. pump.fun profiles carry no creation date, so live this has no effect. */
+  /** 0 = new accounts can earn. Uses pump.fun's account date from the holder feed; gmgn-only callouts have none. */
   minAccountAgeDays: num('MIN_ACCOUNT_AGE_DAYS', 0),
   /** A bag must sit still this long after the callout before it is paid. */
   holdMinutes: num('HOLD_MINUTES', 10),
@@ -61,9 +61,9 @@ export const config = {
   host: str('HOST', '127.0.0.1'),
   dbPath: str('DB_PATH', 'data/callout.db'),
 
-  /** gmgn lists every callout on the coin; read this often. No key needed. */
+  /** How often callouts are read: pump.fun's holder feed, plus gmgn as a backup. No keys needed. */
+  pollMs: Math.max(3000, num('POLL_MS', num('GMGN_POLL_MS', 10_000))),
   gmgnBase: str('GMGN_BASE', 'https://gmgn.ai'),
-  gmgnPollMs: Math.max(3000, num('GMGN_POLL_MS', 10_000)),
   /** pump.fun's site API: the callout (dev, account, squad) and the author (followers, pump user, banned). */
   pumpFrontendBase: str('PUMP_FRONTEND_BASE', 'https://frontend-api-v3.pump.fun'),
   /** Callouts made before this instant never count. ISO date; defaults to first boot. */
