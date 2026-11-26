@@ -2,7 +2,7 @@
 import { EventEmitter } from 'node:events';
 import { type Mode, type Rules } from './config.ts';
 import type { Chain, Outcome } from './chain.ts';
-import type { Row, Source } from './pumpApi.ts';
+import { type Account, type Row, type Source, toRow } from './pumpApi.ts';
 import { drain, eligibility, reconcile, score, toUnits } from './rewards.ts';
 import { type Burn, type Callout, type Store, hash } from './store.ts';
 
@@ -59,39 +59,50 @@ export class Engine extends EventEmitter {
 
   // ---------------------------------------------------------------- intake
 
-  /** Fast poll. Keeps paging only while whole pages are new, so a burst is never missed. */
-  async poll(maxPages = 5): Promise<void> {
+  /** Holders at or above the minimum bag in the last holder read. */
+  watching = 0;
+
+  /**
+   * Reads every callout on the coin, then the holder list from the chain. Callouts from holders with at least
+   * the minimum bag (0.1% by default) go first, from the bottom up: smallest qualifying bag first, each judged
+   * on what pump.fun itself says about the callout and its author. When pump.fun does not answer, the callout
+   * is left for the next read (it stays listed for a day) rather than judged on gmgn's numbers. Everyone below
+   * the minimum is recorded and turned away, so buying in after calling out never counts.
+   * One unreadable wallet never holds up the others.
+   */
+  async poll(): Promise<void> {
     await this.guard('callouts', async () => {
-      for (let n = 0; n < maxPages; n++) {
-        const { rows, hasMore } = await this.source.page(n);
-        const fresh = rows.filter((r) => !this.store.callout(hash(r.calloutId)));
-        await this.admitAll(fresh);
-        if (!hasMore || fresh.length < rows.length || rows.length === 0) break;
+      const list = await this.source.callouts();
+      const supply = await this.chain.supply();
+      // The holder list only orders the work and saves profile lookups; every bag is re-read on admission.
+      const all = await this.guard('holder list', () => this.chain.holders());
+      const now = this.now();
+      const bag = (w: string) => all?.get(w) ?? 0n;
+      const holds = (w: string) => !this.o.exclude.has(w) && (!all || !this.belowMin(bag(w), supply));
+      if (all) this.watching = [...all].filter(([w]) => holds(w)).length;
+      const fresh = list
+        .filter((c) => now - c.createdAt <= MAX_AGE && !this.store.callout(hash(c.calloutId)))
+        .sort((a, b) => Number(holds(b.wallet)) - Number(holds(a.wallet)) || (bag(a.wallet) < bag(b.wallet) ? -1 : bag(a.wallet) > bag(b.wallet) ? 1 : 0) || a.createdAt - b.createdAt);
+      let failed: unknown = null;
+      for (const c of fresh) {
+        if (this.stopping) break;
+        // Below the minimum in a fresh holder read: turned away on that balance, without another RPC call each.
+        const known = all && !holds(c.wallet) ? bag(c.wallet) : undefined;
+        let a: Account | null = null;
+        if (known === undefined) {
+          try { a = await this.source.account(c); } catch (e) { failed = e; continue; }
+          if (!a) continue; // gone from pump.fun: deleted before we got to it
+        }
+        await this.admit(toRow(c, a), known).catch((e) => { failed = e; });
       }
-    });
-  }
-  /** Slow sweep over more pages, in case the feed order ever hides a new callout. */
-  async sweep(pages = 6): Promise<void> {
-    await this.guard('sweep', async () => {
-      for (let n = 0; n < pages; n++) {
-        const { rows, hasMore } = await this.source.page(n);
-        await this.admitAll(rows.filter((r) => !this.store.callout(hash(r.calloutId))));
-        if (!hasMore) break;
-      }
+      if (failed) throw failed;
     });
   }
 
-  /** One unreadable wallet must not hold up everyone behind it. It is retried on the next poll. */
-  private async admitAll(rows: Row[]): Promise<void> {
-    let failed: unknown = null;
-    for (const r of rows) if (!this.stopping) await this.admit(r).catch((e) => { failed = e; });
-    if (failed) throw failed;
-  }
-
-  async admit(r: Row): Promise<void> {
+  async admit(r: Row, known?: bigint): Promise<void> {
     const now = this.now();
     if (now - r.createdAt > MAX_AGE) return;
-    const [balance, supply] = await Promise.all([this.chain.holding(r.wallet), this.chain.supply()]);
+    const [balance, supply] = await Promise.all([known ?? this.chain.holding(r.wallet), this.chain.supply()]);
     const userHash = hash(r.userId);
     const reason = eligibility(
       { ...r, balance, supply },

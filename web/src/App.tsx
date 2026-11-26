@@ -72,9 +72,12 @@ function Nav({ data, online, stale }: { data: Snapshot | null; online: boolean; 
   );
 }
 
+/** How often each holder is checked: one pass over all of them. */
+const every = (ms: number) => (ms < 60_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60_000)} min`);
+
 function Status({ data, online }: { data: Snapshot | null; online: boolean }) {
   const ok = online && !!data && data.health.source && data.health.problems.length === 0;
-  const text = !online ? 'Reconnecting' : !data ? 'Connecting' : data.mode === 'demo' ? 'Demo' : data.mode === 'prelaunch' ? 'Soon' : ok ? `Every ${data.stats.pollMs / 1000}s` : 'Delayed';
+  const text = !online ? 'Reconnecting' : !data ? 'Connecting' : data.mode === 'demo' ? 'Demo' : data.mode === 'prelaunch' ? 'Soon' : ok ? `Every ${every(data.stats.pollMs)}` : 'Delayed';
   const title = data?.health.problems.length ? `Delayed: ${data.health.problems.join(', ')}` : undefined;
   return <span className={`status ${ok ? 'ok' : 'off'}`} title={title}><i />{text}</span>;
 }

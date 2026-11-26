@@ -3,7 +3,7 @@ import { PublicKey } from '@solana/web3.js';
 import { OnlinePumpSdk } from '@pump-fun/pump-sdk';
 import { PUMP_MINT, config, mode, rules } from './config.ts';
 import { SolanaChain } from './chain.ts';
-import { PumpApi } from './pumpApi.ts';
+import { LiveSource } from './pumpApi.ts';
 
 let bad = 0;
 const check = async (name: string, fn: () => Promise<string>) => {
@@ -35,12 +35,21 @@ if (config.coinMint) {
     return r.ok ? `impact ${((await r.json()).priceImpactPct * 100).toFixed(2)}%` : fail(`Jupiter has no route yet (${r.status}). Burns will wait, or set BURN_MODE=direct`);
   });
 }
-await check('pump.fun API', async () => {
-  if (!config.pumpApiKey) fail('PUMP_API_KEY not set. Apply at https://developers.pump.fun');
-  const { rows } = await new PumpApi().page(0);
-  return `${rows.length} callouts on the first page`;
+if (config.coinMint) await check('holders and callouts', async () => {
+  const chain = new SolanaChain();
+  const [all, supply] = await Promise.all([chain.holders(), chain.supply()]);
+  const min = (supply * BigInt(Math.round(rules.minHoldBps * 100))) / 1_000_000n;
+  const big = [...all].filter(([, b]) => b >= min).sort((a, b) => (b[1] > a[1] ? 1 : -1));
+  const api = new LiveSource();
+  const list = await api.callouts();
+  const from = new Set(big.map(([w]) => w));
+  const mine = list.filter((c) => from.has(c.wallet));
+  let pump = 'nothing to look up yet';
+  if (mine[0]) {
+    try { const a = await api.account(mine[0]); pump = a ? `answers (${a.username}: ${a.followers} followers)` : 'says that callout is deleted'; }
+    catch (e) { pump = `not answering right now (${e instanceof Error ? e.message : e}); callouts wait until it does`; }
+  }
+  return `${all.size} holders, ${big.length} at or above the minimum; gmgn lists ${list.length} callouts in the last day, ${mine.length} from qualifying holders; pump.fun ${pump}`;
 });
-const perDay = 86_400_000 / config.pollMs;
-await check('poll rate', async () => (perDay > config.dailyBudget * 0.85 ? fail(`every ${config.pollMs}ms is ${Math.round(perDay)} requests a day against a ${config.dailyBudget} allowance; the poller will slow itself down`) : `${Math.round(perDay)} of ${config.dailyBudget} requests a day`));
 console.log(`  rules ${rules.rewardBps / 100}/${100 - rules.rewardBps / 100} split, max ${rules.maxPotShareBps / 100}% of pot per callout`);
 process.exit(bad ? 1 : 0);

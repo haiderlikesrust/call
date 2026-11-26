@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { rules as base } from '../server/config.ts';
 import type { Chain, OnSigned, Outcome } from '../server/chain.ts';
 import { Engine } from '../server/engine.ts';
-import { parseRow, type Row, type Source } from '../server/pumpApi.ts';
+import { parseDetail, parseListed, parseOverview, toRow, type Row, type Source } from '../server/pumpApi.ts';
 import { Store, hash } from '../server/store.ts';
 import { toUnits } from '../server/rewards.ts';
 
@@ -15,12 +15,21 @@ function rig() {
   const bags = new Map<string, bigint>();
   const w = {
     treasury: 0n, out: 'confirmed' as Outcome, paid: new Map<string, bigint>(), sends: 0, deleted: new Set<string>(),
-    followers: new Map<string, number>(), rows: [] as Row[], resolveOut: 'pending' as Outcome, burned: 0n, bad: new Set<string>(),
+    followers: new Map<string, number>(), rows: [] as Row[], resolveOut: 'pending' as Outcome, burned: 0n, bad: new Set<string>(), profiled: [] as string[], down: false,
   };
   const apply: (() => void)[] = [];
+  const latest = (a: string) => w.rows.find((x) => x.wallet === a);
   const source: Source = {
     health: { ok: true, note: '', remaining: null },
-    page: async (n) => ({ rows: w.rows.slice(n * 50, n * 50 + 50), hasMore: w.rows.length > (n + 1) * 50 }),
+    everyMs: 10_000,
+    callouts: async () => w.rows.map((x) => ({ calloutId: x.calloutId, wallet: x.wallet, createdAt: x.createdAt, thesis: x.thesis, likes: x.likes, username: x.username, avatar: x.avatar, followers: x.followers })),
+    account: async (l) => {
+      w.profiled.push(l.wallet);
+      if (w.down) throw new Error('pump.fun 403 Client not allowed');
+      const x = w.rows.find((y) => y.calloutId === l.calloutId);
+      if (!x || w.deleted.has(x.calloutId)) return null;
+      return { calloutId: x.calloutId, wallet: x.wallet, userId: x.userId, isDev: x.isDev, isGroup: x.isGroup, username: x.username, avatar: x.avatar, followers: w.followers.get(x.wallet) ?? x.followers, isPumpUser: x.isPumpUser, banned: x.lowQuality };
+    },
     exists: async (id) => !w.deleted.has(id),
     followers: async (a) => w.followers.get(a) ?? 1000,
   };
@@ -28,6 +37,7 @@ function rig() {
     canSign: true,
     treasuryBalance: async () => w.treasury, supply: async () => SUPPLY,
     holding: async (a) => { if (w.bad.has(a)) throw new Error('rpc'); return bags.get(a) ?? 0n; },
+    holders: async () => new Map([...bags].filter(([, b]) => b > 0n)),
     solOk: async () => true, claim: async () => null,
     pay: async (items, onSigned: OnSigned) => {
       w.sends++;
@@ -108,9 +118,10 @@ test('dipping and rebuying counts the lowest bag seen', async () => {
 
 test('deleted callouts, spam and second accounts are refused', async () => {
   const r = rig(); const e = r.make();
-  const a = r.call('A'); r.w.deleted.add(r.w.rows[0]!.calloutId);
+  const a = r.call('A');
   const c = r.call('C');
   await e.poll();
+  r.w.deleted.add(r.store.callout(a)!.callout_id!);
   r.tick(5); const c2 = r.call('C');
   const alt = r.call('C-alt', SUPPLY / 200n, { userId: 'u-C' });
   await e.poll();
@@ -189,11 +200,72 @@ test('one unreadable wallet does not block the others', async () => {
   assert.equal(e.problems.size, 0);
 });
 
-test('a burst larger than one page is still fully read', async () => {
+test('a burst of callouts is read in full', async () => {
   const r = rig(); const e = r.make();
   for (let i = 0; i < 130; i++) r.call(`W${i}`);
   await e.poll();
   assert.equal(r.store.byStatus('maturing').length, 130);
+});
+
+test('qualifying holders go first, smallest bag up; small bags and excluded wallets are turned away', async () => {
+  const r = rig(); const e = r.make();
+  const big = r.call('BIG', SUPPLY / 20n); r.call('SMALL', SUPPLY / 1000n); r.call('MID', SUPPLY / 100n);
+  const tiny = r.call('TINY', SUPPLY / 10_000n); const none = r.call('NONE', 0n); const dev = r.call('DEV');
+  await e.poll();
+  assert.deepEqual(r.w.profiled, ['SMALL', 'MID', 'BIG'], 'only qualifying holders are looked up, smallest first');
+  assert.equal(e.watching, 3);
+  assert.equal(r.store.callout(big)!.status, 'maturing');
+  assert.equal(r.store.callout(tiny)!.reason, 'low-holding');
+  assert.equal(r.store.callout(none)!.reason, 'not-holder');
+  assert.equal(r.store.callout(dev)!.reason, 'excluded');
+});
+
+test('buying in after calling out does not count', async () => {
+  const r = rig(); const e = r.make();
+  const a = r.call('A', SUPPLY / 10_000n);
+  await e.poll();
+  r.bags.set('A', SUPPLY / 100n); await e.poll();
+  assert.equal(r.store.callout(a)!.reason, 'low-holding');
+});
+
+test('pump.fun decides: its follower count, dev flag and squad flag win over gmgn', async () => {
+  const r = rig(); const e = r.make();
+  const a = r.call('A', SUPPLY / 200n, { followers: 0 }); r.w.followers.set('A', 1048);
+  const d = r.call('D', SUPPLY / 200n, { isDev: true });
+  const g = r.call('G', SUPPLY / 200n, { isGroup: true });
+  await e.poll();
+  assert.equal(r.store.callout(a)!.status, 'maturing');
+  assert.equal(r.store.callout(a)!.followers, 1048);
+  assert.equal(r.store.callout(d)!.reason, 'dev');
+  assert.equal(r.store.callout(g)!.reason, 'group');
+});
+
+test('when pump.fun does not answer, the callout waits for the next read instead of being judged', async () => {
+  const r = rig(); const e = r.make();
+  r.w.down = true;
+  const a = r.call('A', SUPPLY / 200n, { followers: 0 }); r.w.followers.set('A', 1048);
+  const t = r.call('TINY', SUPPLY / 10_000n);
+  await e.poll();
+  assert.equal(r.store.callout(a), undefined, 'not judged on gmgn numbers');
+  assert.equal(r.store.callout(t)!.reason, 'low-holding', 'small bags need no pump.fun answer');
+  assert.ok(e.problems.has('callouts'));
+  r.w.down = false; await e.poll();
+  assert.equal(r.store.callout(a)!.status, 'maturing');
+  assert.equal(e.problems.size, 0);
+});
+
+test('a callout deleted before it is read is skipped', async () => {
+  const r = rig(); const e = r.make();
+  const a = r.call('A'); r.w.deleted.add(r.w.rows[0]!.calloutId);
+  await e.poll();
+  assert.equal(r.store.callout(a), undefined);
+});
+
+test('a callout older than a day is not admitted', async () => {
+  const r = rig(); const e = r.make();
+  const old = r.call('A', SUPPLY / 200n, { createdAt: e.now() - 25 * 60 * MIN });
+  await e.poll();
+  assert.equal(r.store.callout(old), undefined);
 });
 
 test('API data is purged after 24h but the ledger survives', async () => {
@@ -208,16 +280,33 @@ test('API data is purged after 24h but the ledger survives', async () => {
   assert.ok(BigInt(c.amount!) > 0n);
 });
 
-test('API rows are parsed defensively', () => {
-  const mint = 'So11111111111111111111111111111111111111112';
-  const wallet = 'pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn';
-  const ok = { coinMint: mint, walletAddress: wallet, userId: 'u', userName: 'n', profileImage: 'javascript:alert(1)', accountKind: 'person', profile: { followerCount: 5, createdAt: '2026-01-01T00:00:00Z' }, callout: { calloutId: 'x', calloutTimestamp: '2026-11-20T00:00:00Z', thesis: 'hi' } };
-  const row = parseRow(ok, mint)!;
-  assert.equal(row.avatar, null);
-  assert.equal(row.followers, 5);
-  assert.equal(parseRow({ ...ok, coinMint: 'other' }, mint), null);
-  assert.equal(parseRow({ ...ok, callout: null }, mint), null);
-  assert.equal(parseRow({ ...ok, walletAddress: '0xabc' }, mint), null);
-  assert.equal(parseRow(null, mint), null);
-  assert.equal(parseRow({ ...ok, callout: { ...ok.callout, calloutTimestamp: '1795000000000' } }, mint)!.createdAt, 1795000000000);
+test('API responses are parsed defensively', () => {
+  const mint = '4VDjNNkemze5ZX5MWTzphtw6AtQdrJL2XqqPkt19pump';
+  const wallet = '9EzDyQ8z5DepYjRMLNDK8ceRTRKj71gT5fxa7WANcS4A';
+  // Trimmed from real gmgn and pump.fun answers.
+  const item = { platform: 'pump', callout_id: 'pumpfun:b828952f-987c-4e6b-9887-8e71f52d92bd', created_at: 1795674083079, author: { id: wallet, name: 'grokcoindev', avatar: 'javascript:alert(1)', followers: 204, wallet }, token: { chain: 'sol', address: mint }, content: { text: 'Duve is the new black bull.' }, stats: { likes: 2, replies: 0 } };
+  const l = parseListed(item, mint)!;
+  assert.deepEqual(l, { calloutId: 'b828952f-987c-4e6b-9887-8e71f52d92bd', wallet, createdAt: 1795674083079, thesis: 'Duve is the new black bull.', likes: 2, username: 'grokcoindev', avatar: null, followers: 204 });
+  assert.equal(parseListed({ ...item, token: { address: 'other' } }, mint), null);
+  assert.equal(parseListed({ ...item, platform: 'other' }, mint), null);
+  assert.equal(parseListed({ ...item, author: { ...item.author, wallet: '0xabc' } }, mint), null);
+  assert.equal(parseListed({ ...item, created_at: null }, mint), null);
+  assert.equal(parseListed(null, mint), null);
+  const detail = { callout: { calloutId: l.calloutId, userId: wallet, coinMint: mint, user_uuid: 'c8026662-0fd4-4fd5-8953-6c828554e838', authorIsDev: false, accountKind: 'person', userName: 'grokcoindev', profileImage: 'https://x/y.png' } };
+  const d = parseDetail(detail, l, mint)!;
+  assert.deepEqual(d, { calloutId: l.calloutId, wallet, userId: 'c8026662-0fd4-4fd5-8953-6c828554e838', isDev: false, isGroup: false, username: 'grokcoindev', avatar: 'https://x/y.png' });
+  assert.equal(parseDetail({ callout: { ...detail.callout, coinMint: 'other' } }, l, mint), null, 'another coin');
+  assert.equal(parseDetail({ callout: { ...detail.callout, userId: 'someoneElse' } }, l, mint), null, 'another author');
+  assert.equal(parseDetail({ callout: null }, l, mint), null);
+  assert.equal(parseDetail({ callout: { ...detail.callout, user_uuid: '' } }, l, mint)!.userId, wallet);
+  assert.equal(parseDetail({ callout: { ...detail.callout, authorIsDev: true, accountKind: 'group' } }, l, mint)!.isDev, true);
+  const ov = { address: wallet, profile: { address: wallet, is_pump_user: true, is_banned: false, username: 'grok', kind: 'person', followers: 210 }, isPumpUser: true, counts: { followers: 216 }, banned: false };
+  const o = parseOverview(ov, wallet)!;
+  assert.deepEqual([o.followers, o.isPumpUser, o.banned, o.isGroup], [216, true, false, false]);
+  assert.equal(parseOverview({ ...ov, profile: { ...ov.profile, address: 'other' } }, wallet), null);
+  assert.equal(parseOverview({ ...ov, banned: false, profile: { ...ov.profile, is_banned: true } }, wallet)!.banned, true);
+  const row = toRow(l, { ...d, followers: o.followers, isPumpUser: o.isPumpUser, banned: o.banned });
+  assert.deepEqual([row.userId, row.followers, row.isDev, row.isPumpUser], ['c8026662-0fd4-4fd5-8953-6c828554e838', 216, false, true]);
+  const bare = toRow(l, null);
+  assert.deepEqual([bare.userId, bare.followers], [wallet, 204], 'turned-away callouts show gmgn details');
 });

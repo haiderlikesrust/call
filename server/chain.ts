@@ -19,6 +19,8 @@ export interface Chain {
   treasuryBalance(): Promise<bigint>;
   supply(): Promise<bigint>;
   holding(wallet: string): Promise<bigint>;
+  /** Every wallet holding the coin, with its balance. */
+  holders(): Promise<Map<string, bigint>>;
   solOk(): Promise<boolean>;
   claim(): Promise<string | null>;
   pay(items: { wallet: string; amount: bigint }[], onSigned: OnSigned): Promise<Outcome>;
@@ -40,6 +42,7 @@ export class SolanaChain implements Chain {
   readonly coin = new PublicKey(config.coinMint);
   private coinInfo: { program: PublicKey; decimals: number } | null = null;
   private supplyCache = { at: 0, v: 0n };
+  private holderCache = { at: 0, v: new Map<string, bigint>() };
 
   get canSign() { return this.signer !== null && config.live; }
   private me(): Keypair {
@@ -71,6 +74,27 @@ export class SolanaChain implements Chain {
   async holding(wallet: string) {
     const res = await this.conn.getParsedTokenAccountsByOwner(new PublicKey(wallet), { mint: this.coin });
     return res.value.reduce((n, a) => n + BigInt(a.account.data.parsed.info.tokenAmount.amount), 0n);
+  }
+  /** One read of every token account for the coin. Program-owned accounts (bonding curve, pool) are left out. */
+  async holders() {
+    if (Date.now() - this.holderCache.at < 30_000) return this.holderCache.v;
+    const { program } = await this.coinMeta();
+    const accs = await this.conn.getProgramAccounts(program, {
+      filters: [{ memcmp: { offset: 0, bytes: this.coin.toBase58() } }],
+      dataSlice: { offset: 32, length: 40 },
+    });
+    const out = new Map<string, bigint>();
+    for (const { account } of accs) {
+      if (account.data.length < 40) continue;
+      const amount = account.data.readBigUInt64LE(32);
+      if (amount === 0n) continue;
+      const owner = new PublicKey(account.data.subarray(0, 32));
+      if (!PublicKey.isOnCurve(owner.toBytes())) continue;
+      const w = owner.toBase58();
+      out.set(w, (out.get(w) ?? 0n) + amount);
+    }
+    this.holderCache = { at: Date.now(), v: out };
+    return out;
   }
   async solOk() {
     return !!this.treasury && (await this.conn.getBalance(this.treasury)) >= config.minSolReserve * 1e9;

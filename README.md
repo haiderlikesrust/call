@@ -12,15 +12,15 @@ npm test           # reward maths and engine
 npm run doctor     # read-only check of your setup
 ```
 
-Modes: **demo** (no API key), **dry-run** (real callouts, nothing sent), **live** (`LIVE_PAYOUTS=true` plus the treasury key).
+Modes: **demo** (no `COIN_MINT`), **dry-run** (real callouts, nothing sent), **live** (`LIVE_PAYOUTS=true` plus the treasury key).
 
 ## Going live
 
 1. Launch the coin paired with **$PUMP** as its quote. That is what makes creator fees arrive in $PUMP. Do not add fee sharing unless the treasury is a recipient.
-2. Apply for a key at https://developers.pump.fun. Describe exactly this use: reading callouts and follower counts on one coin to pay its holders. The API terms tie the key to the approved purpose. Ask developers@pump.fun for the 1M/day tier if you want 1-second polling.
+2. No API key is needed. Every 10 seconds (`GMGN_POLL_MS`) the server reads the coin's callouts from gmgn and its holders from the chain. Callouts from holders with at least 0.1% go first, smallest bag up; everyone below is turned away on the spot, so buying in after calling out never counts. Each one is then judged on what pump.fun itself says: the callout (`/callout/{id}`: dev flag, account id, person or squad) and the author (`/users/{wallet}/overview`: followers, pump user, banned). gmgn's follower counts are often stale or zero, so they never decide anything; if pump.fun doesn't answer, the callout waits for the next read (it stays listed for a day). Both sites only answer browser-like clients, so requests carry Chrome's TLS fingerprint (the `impit` package).
 3. Copy `.env.example` to `.env`. Run dry-run first with `TREASURY_PUBKEY`, then `npm run doctor`.
 4. Use a fresh creator wallet. All $PUMP in it counts as fee income and is split 80/20, so keep personal $PUMP elsewhere. Keep some SOL in it: each first-time recipient costs about 0.002 SOL for their token account.
-5. Use a paid RPC. Run exactly one server process per `data/callout.db`, and back that file up: it is the payout ledger.
+5. Use a paid RPC: the holder list is one `getProgramAccounts` call every 30 seconds, which the public RPC often refuses. Run exactly one server process per `data/callout.db`, and back that file up: it is the payout ledger.
 
 ## The reward
 

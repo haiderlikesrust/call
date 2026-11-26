@@ -42,7 +42,7 @@ export function snapshot(e: Engine, mode: Mode, startedAt: number, build: string
     at: now, mode, startedAt, build,
     coin: { mint: config.coinMint, symbol: config.coinSymbol, pumpMint: PUMP_MINT, xUrl: config.xUrl, burnMode: config.burnMode },
     pots: { reward: N(pots.reward), burn: N(pots.burn), due: N(pots.due) },
-    stats: { callouts: stat.n, paidCallouts: stat.paid ?? 0, paidOut: stat.total ?? 0, burnedPump: burned.pump ?? 0, burnedCoin: burned.coin ?? 0, income, queue: queue.length, pollMs: config.pollMs },
+    stats: { callouts: stat.n, paidCallouts: stat.paid ?? 0, paidOut: stat.total ?? 0, burnedPump: burned.pump ?? 0, burnedCoin: burned.coin ?? 0, income, queue: queue.length, pollMs: e.source.everyMs, holders: e.watching },
     feed: feed.map(pub),
     queue: queue.slice(0, 40).map((c) => ({ ...pub(c), payableNow: payable.has(c.id) })),
     board: board.map((b) => ({ ...b })),
