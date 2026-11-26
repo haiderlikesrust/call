@@ -1,9 +1,9 @@
-// Stand-ins for pump.fun and Solana so the site runs before the API key arrives.
+// Stand-ins for pump.fun and Solana so the site runs before the coin exists.
 // They drive the real engine with the real reward maths; only the inputs are invented.
 import { randomBytes } from 'node:crypto';
 import bs58 from 'bs58';
 import type { Chain, OnSigned, Outcome } from './chain.ts';
-import type { Row, Source } from './pumpApi.ts';
+import type { Listed, Row, Source } from './pumpApi.ts';
 import { UNIT } from './rewards.ts';
 
 const pick = <T>(a: readonly T[]): T => a[Math.floor(Math.random() * a.length)]!;
@@ -43,9 +43,16 @@ export class DemoWorld {
 
 export class DemoSource implements Source {
   health = { ok: true, note: 'demo data', remaining: null };
+  readonly everyMs = 1000;
   private readonly w: DemoWorld;
   constructor(w: DemoWorld) { this.w = w; }
-  async page(n: number) { return { rows: this.w.rows.slice(n * 50, n * 50 + 50), hasMore: this.w.rows.length > (n + 1) * 50 }; }
+  async callouts() {
+    return this.w.rows.map((r) => ({ calloutId: r.calloutId, wallet: r.wallet, createdAt: r.createdAt, thesis: r.thesis, likes: r.likes, username: r.username, avatar: r.avatar, followers: r.followers }));
+  }
+  async account(l: Listed) {
+    const p = this.w.people.find((x) => x.wallet === l.wallet);
+    return { calloutId: l.calloutId, wallet: l.wallet, userId: l.wallet, isDev: false, isGroup: false, username: l.username, avatar: null, followers: p?.followers ?? 100, isPumpUser: true, banned: false };
+  }
   async exists() { return Math.random() > 0.02; }
   async followers(wallet: string) { return this.w.people.find((p) => p.wallet === wallet)?.followers ?? 100; }
 }
@@ -57,6 +64,7 @@ export class DemoChain implements Chain {
   async treasuryBalance() { return this.w.treasury; }
   async supply() { return this.w.supplyNow; }
   async holding(wallet: string) { return this.w.people.find((p) => p.wallet === wallet)?.bag ?? 0n; }
+  async holders() { return new Map(this.w.people.filter((p) => p.bag > 0n).map((p) => [p.wallet, p.bag])); }
   async solOk() { return true; }
   async claim() { return null; }
   async resolve(): Promise<Outcome> { return 'confirmed'; }

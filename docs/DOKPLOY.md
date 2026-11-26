@@ -61,7 +61,7 @@ The new container logs `[leader] standby`, then `[leader] active`. The old one l
 
 ## Go live
 
-1. **Rehearsal.** Set `COIN_MINT`, `PUMP_API_KEY`, `RPC_URL` and `TREASURY_PUBKEY`, redeploy. Callouts are real, nothing is sent. Compare the site with the coin's page on pump.fun.
+1. **Rehearsal.** Set `COIN_MINT`, `RPC_URL` and `TREASURY_PUBKEY`, redeploy. Callouts are real, nothing is sent. Compare the site with the coin's page on pump.fun.
 2. In the application's terminal: `npm run doctor`. Fix anything marked `FIX`.
 3. Set `TREASURY_SECRET_KEY` and `LIVE_PAYOUTS=true`, redeploy. Callouts collected during the rehearsal are dropped on the first live start, so nobody is paid for those.
 4. Start with a small pool and check the first receipts on Solscan.

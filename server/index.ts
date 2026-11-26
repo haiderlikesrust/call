@@ -4,7 +4,7 @@ import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { PUMP_DECIMALS, config, mode, rules } from './config.ts';
 import { Engine } from './engine.ts';
-import { PumpApi } from './pumpApi.ts';
+import { LiveSource } from './pumpApi.ts';
 import { SolanaChain } from './chain.ts';
 import { DemoChain, DemoSource, DemoWorld } from './demo.ts';
 import { LeaderLock } from './leader.ts';
@@ -22,7 +22,7 @@ const world = new DemoWorld();
 const idle = demo || mode === 'prelaunch';
 const real = idle ? null : new SolanaChain();
 if (real?.treasury) config.excludeWallets.add(real.treasury.toBase58());
-const source = idle ? new DemoSource(world) : new PumpApi();
+const source = idle ? new DemoSource(world) : new LiveSource();
 const chain = real ?? new DemoChain(world);
 const startedAt = () => Number(store.get('start') ?? 0) || Date.now();
 const engine = new Engine({
@@ -45,16 +45,6 @@ const loop = (ms: () => number, fn: () => Promise<unknown>) => {
     if (!engine.stopping) setTimeout(tick, ms());
   };
   void tick();
-};
-/** Never poll faster than the daily allowance can sustain until midnight UTC. */
-let used = 0;
-let day = new Date().toISOString().slice(0, 10);
-const pace = () => {
-  const today = new Date().toISOString().slice(0, 10);
-  if (today !== day) { day = today; used = 0; }
-  const left = Math.max(1, config.dailyBudget * 0.85 - used);
-  const msLeft = Date.parse(`${day}T24:00:00Z`) - Date.now();
-  return Math.max(config.pollMs, Math.min(60_000, msLeft / left));
 };
 
 function runDemo(): void {
@@ -81,8 +71,7 @@ function runReal(): void {
     store.set('live_since', String(Date.now()));
     store.set('start', String(config.rewardsStart ? Date.parse(config.rewardsStart) : Date.now()));
   }
-  loop(pace, async () => { used++; await engine.poll(); });
-  loop(() => 300_000, async () => { used += 6; await engine.sweep(); });
+  loop(() => source.everyMs, () => engine.poll());
   loop(() => 20_000, () => engine.mature());
   let lastClaim = 0;
   loop(() => 10_000, async () => {

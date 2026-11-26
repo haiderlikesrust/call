@@ -35,7 +35,7 @@ export const rules = {
   /** pump.fun followers at which the follower factor is maxed. It starts from 0 at minFollowers. */
   followersFull: num('FOLLOWERS_FULL', 10_000),
   minFollowers: num('MIN_FOLLOWERS', 10),
-  /** 0 = new accounts can earn. */
+  /** 0 = new accounts can earn. pump.fun profiles carry no creation date, so live this has no effect. */
   minAccountAgeDays: num('MIN_ACCOUNT_AGE_DAYS', 0),
   /** A bag must sit still this long after the callout before it is paid. */
   holdMinutes: num('HOLD_MINUTES', 10),
@@ -61,11 +61,11 @@ export const config = {
   host: str('HOST', '127.0.0.1'),
   dbPath: str('DB_PATH', 'data/callout.db'),
 
-  pumpApiKey: str('PUMP_API_KEY'),
-  pumpApiBase: str('PUMP_API_BASE', 'https://api.pump.fun/v1'),
-  /** 2500 ms fits the default 50k/day key. Use 1000 only on the 1M/day tier. */
-  pollMs: num('POLL_MS', 2500),
-  dailyBudget: num('PUMP_DAILY_BUDGET', 50_000),
+  /** gmgn lists every callout on the coin; read this often. No key needed. */
+  gmgnBase: str('GMGN_BASE', 'https://gmgn.ai'),
+  gmgnPollMs: Math.max(3000, num('GMGN_POLL_MS', 10_000)),
+  /** pump.fun's site API: the callout (dev, account, squad) and the author (followers, pump user, banned). */
+  pumpFrontendBase: str('PUMP_FRONTEND_BASE', 'https://frontend-api-v3.pump.fun'),
   /** Callouts made before this instant never count. ISO date; defaults to first boot. */
   rewardsStart: str('REWARDS_START'),
 
@@ -89,10 +89,10 @@ export const config = {
 
 /**
  * demo: invented data, for local work or DEMO=true. Never the default in production.
- * prelaunch: deployed before the API key and coin exist. The real site, empty.
+ * prelaunch: deployed before the coin exists. The real site, empty.
  */
 export type Mode = 'demo' | 'prelaunch' | 'dry-run' | 'live';
-const ready = !!config.pumpApiKey && !!config.coinMint;
+const ready = !!config.coinMint;
 export const mode: Mode = str('DEMO') === 'true' ? 'demo'
   : ready ? (config.live && config.treasurySecret ? 'live' : 'dry-run')
   : env.NODE_ENV === 'production' ? 'prelaunch' : 'demo';
