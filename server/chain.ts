@@ -1,73 +1,98 @@
 // Everything that touches Solana. A transaction's signature is handed to `onSigned` (which writes it
 // to disk) BEFORE broadcast, so a crash can never turn into a second payment.
+//
+// Callers are paid in USDC. Buybacks swap USDC for the coin through Jupiter and burn what they bought.
 import {
   ComputeBudgetProgram, Connection, Keypair, PublicKey, TransactionMessage, VersionedTransaction, type TransactionInstruction,
 } from '@solana/web3.js';
 import {
-  AccountLayout, TOKEN_2022_PROGRAM_ID, createAssociatedTokenAccountIdempotentInstruction, createBurnCheckedInstruction,
-  createTransferCheckedWithTransferHookInstruction, getAssociatedTokenAddressSync,
+  AccountLayout, TOKEN_PROGRAM_ID, createAssociatedTokenAccountIdempotentInstruction, createBurnCheckedInstruction,
+  createTransferCheckedInstruction, getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
-import { OnlinePumpSdk, PUMP_SDK, canonicalPumpPoolPdaWithQuote } from '@pump-fun/pump-sdk';
-import { OnlinePumpAmmSdk } from '@pump-fun/pump-swap-sdk';
 import bs58 from 'bs58';
-import { PUMP_DECIMALS, PUMP_MINT, config } from './config.ts';
+import { LAMPORTS, USDC_DECIMALS, USDC_MINT, config } from './config.ts';
 
 export type Outcome = 'confirmed' | 'failed' | 'expired' | 'pending';
 export type OnSigned = (sig: string, lastValid: number) => void;
 export interface Holders { at: number; balances: Map<string, bigint> }
 export interface Chain {
   readonly canSign: boolean;
+  /** USDC this coin can pay out, in base units. */
   treasuryBalance(): Promise<bigint>;
   supply(): Promise<bigint>;
   holding(wallet: string): Promise<bigint>;
   /** Every wallet holding the coin, with its balance, and when that read started (ms). */
   holders(): Promise<Holders>;
   solOk(): Promise<boolean>;
+  /** Collects fees and turns them into USDC. Returns a signature when something moved. */
   claim(): Promise<string | null>;
   pay(items: { wallet: string; amount: bigint }[], onSigned: OnSigned): Promise<Outcome>;
   resolve(sig: string, lastValid: number): Promise<Outcome>;
-  buyback(pumpIn: bigint, onSigned: OnSigned): Promise<Outcome>;
+  /** Swaps USDC for the coin, to burn. */
+  buyback(usdcIn: bigint, onSigned: OnSigned): Promise<Outcome>;
   bought(sig: string): Promise<bigint>;
-  burn(mint: 'pump' | 'coin', amount: bigint, onSigned: OnSigned): Promise<Outcome>;
+  burn(which: 'quote' | 'coin', amount: bigint, onSigned: OnSigned): Promise<Outcome>;
 }
 
-const PUMP = new PublicKey(PUMP_MINT);
+export const USDC = new PublicKey(USDC_MINT);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const keypair = (secret: string): Keypair =>
+export const keypair = (secret: string): Keypair =>
   Keypair.fromSecretKey(secret.startsWith('[') ? Uint8Array.from(JSON.parse(secret)) : bs58.decode(secret));
+/** Network fees and any token account a swap opens. A swap that costs more SOL than this is refused. */
+const SWAP_SOL_SLACK = BigInt(Math.round(0.01 * LAMPORTS));
+
+export interface ChainOpts {
+  /** The coin. */
+  mint: string;
+  /** The paying wallet; null to only read. */
+  signer: Keypair | null;
+  live?: boolean;
+  conn?: Connection;
+}
 
 export class SolanaChain implements Chain {
-  readonly conn = new Connection(config.rpcUrl, 'confirmed');
-  readonly signer: Keypair | null = config.treasurySecret ? keypair(config.treasurySecret) : null;
-  readonly treasury: PublicKey | null = this.signer?.publicKey ?? (config.treasuryPubkey ? new PublicKey(config.treasuryPubkey) : null);
-  readonly coin = new PublicKey(config.coinMint);
+  readonly conn: Connection;
+  readonly signer: Keypair | null;
+  readonly treasury: PublicKey | null;
+  readonly coin: PublicKey;
+  private readonly live: boolean;
   private coinInfo: { program: PublicKey; decimals: number } | null = null;
+
+  constructor(o: ChainOpts) {
+    this.conn = o.conn ?? new Connection(config.rpcUrl, 'confirmed');
+    this.signer = o.signer;
+    this.treasury = this.signer?.publicKey ?? null;
+    this.coin = new PublicKey(o.mint);
+    this.live = o.live ?? config.live;
+  }
   private supplyCache = { at: 0, v: 0n };
   private holderCache: Holders = { at: 0, balances: new Map() };
 
-  get canSign() { return this.signer !== null && config.live; }
-  private me(): Keypair {
-    if (!this.signer || !config.live) throw new Error('live payouts are off');
+  get canSign() { return this.signer !== null && this.live; }
+  protected me(): Keypair {
+    if (!this.signer || !this.live) throw new Error('live payouts are off');
     return this.signer;
   }
-  private pumpAta(owner: PublicKey) { return getAssociatedTokenAddressSync(PUMP, owner, true, TOKEN_2022_PROGRAM_ID); }
-  private async coinMeta() {
+  usdcAta(owner: PublicKey) { return getAssociatedTokenAddressSync(USDC, owner, true, TOKEN_PROGRAM_ID); }
+  protected async coinMeta() {
     if (!this.coinInfo) {
       const acc = await this.conn.getParsedAccountInfo(this.coin);
-      if (!acc.value) throw new Error('COIN_MINT not found on-chain');
+      if (!acc.value) throw new Error('coin mint not found on-chain');
       const data = acc.value.data as { parsed?: { info?: { decimals?: number } } };
       const decimals = data.parsed?.info?.decimals;
-      if (decimals === undefined) throw new Error('COIN_MINT is not a token mint');
+      if (decimals === undefined) throw new Error('coin mint is not a token mint');
       this.coinInfo = { program: acc.value.owner, decimals };
     }
     return this.coinInfo;
   }
 
-  async treasuryBalance() {
+  /** The wallet's actual USDC. A launched coin's own share of it is its treasuryBalance. */
+  async walletUsdc(): Promise<bigint> {
     if (!this.treasury) return 0n;
-    const acc = await this.conn.getAccountInfo(this.pumpAta(this.treasury));
+    const acc = await this.conn.getAccountInfo(this.usdcAta(this.treasury));
     return acc ? AccountLayout.decode(acc.data.subarray(0, AccountLayout.span)).amount : 0n;
   }
+  async treasuryBalance() { return this.walletUsdc(); }
   async supply() {
     if (Date.now() - this.supplyCache.at > 30_000) this.supplyCache = { at: Date.now(), v: BigInt((await this.conn.getTokenSupply(this.coin)).value.amount) };
     return this.supplyCache.v;
@@ -100,10 +125,10 @@ export class SolanaChain implements Chain {
     return this.holderCache;
   }
   async solOk() {
-    return !!this.treasury && (await this.conn.getBalance(this.treasury)) >= config.minSolReserve * 1e9;
+    return !!this.treasury && (await this.conn.getBalance(this.treasury)) >= config.minSolReserve * LAMPORTS;
   }
 
-  private async build(ixs: TransactionInstruction[], units: number) {
+  protected async build(ixs: TransactionInstruction[], units: number) {
     const { blockhash, lastValidBlockHeight } = await this.conn.getLatestBlockhash('confirmed');
     const msg = new TransactionMessage({
       payerKey: this.me().publicKey, recentBlockhash: blockhash,
@@ -115,7 +140,7 @@ export class SolanaChain implements Chain {
     }).compileToV0Message();
     return { tx: new VersionedTransaction(msg), lastValid: lastValidBlockHeight };
   }
-  private async send(tx: VersionedTransaction, lastValid: number, onSigned: OnSigned): Promise<Outcome> {
+  protected async send(tx: VersionedTransaction, lastValid: number, onSigned: OnSigned): Promise<Outcome> {
     tx.sign([this.me()]);
     const sig = bs58.encode(tx.signatures[0]!);
     onSigned(sig, lastValid);
@@ -145,92 +170,96 @@ export class SolanaChain implements Chain {
     return !st && height > lastValid ? 'expired' : 'pending';
   }
 
-  async claim(): Promise<string | null> {
-    const me = this.me();
-    const online = new OnlinePumpSdk(this.conn as never);
-    const curve = await online.fetchBondingCurve(this.coin);
-    const pool = canonicalPumpPoolPdaWithQuote(this.coin, PUMP);
-    const ixs: TransactionInstruction[] = [
-      await PUMP_SDK.sweepCreatorFeeInstruction({ payer: me.publicKey, mint: this.coin, creator: curve.creator, quoteMint: PUMP, quoteTokenProgram: TOKEN_2022_PROGRAM_ID }),
-    ];
-    if (curve.complete && (await this.conn.getAccountInfo(pool)))
-      ixs.push(await new OnlinePumpAmmSdk(this.conn as never).sweepCreatorFeeInstruction(pool, me.publicKey));
-    ixs.push(...(await online.collectCoinCreatorFeeV2Instructions(me.publicKey, PUMP, TOKEN_2022_PROGRAM_ID, me.publicKey)));
-    const { tx, lastValid } = await this.build(ixs, 400_000);
-    const ata = this.pumpAta(me.publicKey);
-    const before = await this.treasuryBalance();
-    const sim = await this.conn.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true, accounts: { encoding: 'base64', addresses: [ata.toBase58()] } });
-    if (sim.value.err) throw new Error(`claim would fail: ${JSON.stringify(sim.value.err)}`);
-    const gained = decodeAmount(sim.value.accounts?.[0]?.data) - before;
-    if (gained < BigInt(config.minBurn) * 10n ** BigInt(PUMP_DECIMALS)) return null; // not worth the fee yet
-    let signature = '';
-    const out = await this.send(tx, lastValid, (s) => { signature = s; });
-    return out === 'confirmed' ? signature : null;
-  }
+  /** Outside the launchpad there are no creator fees to collect. LaunchChain overrides this. */
+  async claim(): Promise<string | null> { return null; }
 
   async pay(items: { wallet: string; amount: bigint }[], onSigned: OnSigned) {
     const me = this.me();
-    const from = this.pumpAta(me.publicKey);
+    const from = this.usdcAta(me.publicKey);
     const ixs: TransactionInstruction[] = [];
     for (const it of items) {
       const owner = new PublicKey(it.wallet);
-      const to = this.pumpAta(owner);
+      const to = this.usdcAta(owner);
       ixs.push(
-        createAssociatedTokenAccountIdempotentInstruction(me.publicKey, to, owner, PUMP, TOKEN_2022_PROGRAM_ID),
-        await createTransferCheckedWithTransferHookInstruction(this.conn, from, PUMP, to, me.publicKey, it.amount, PUMP_DECIMALS, [], 'confirmed', TOKEN_2022_PROGRAM_ID),
+        createAssociatedTokenAccountIdempotentInstruction(me.publicKey, to, owner, USDC, TOKEN_PROGRAM_ID),
+        createTransferCheckedInstruction(from, USDC, to, me.publicKey, it.amount, USDC_DECIMALS, [], TOKEN_PROGRAM_ID),
       );
     }
-    const { tx, lastValid } = await this.build(ixs, 60_000 + 60_000 * items.length);
+    const { tx, lastValid } = await this.build(ixs, 40_000 + 40_000 * items.length);
     return this.send(tx, lastValid, onSigned);
   }
 
-  async buyback(pumpIn: bigint, onSigned: OnSigned): Promise<Outcome> {
+  /** A Jupiter swap for this wallet, unsigned. */
+  protected async jupiter(inputMint: string, outputMint: string, amount: bigint, slippageBps: number) {
     const me = this.me();
-    const { program } = await this.coinMeta();
     const headers: Record<string, string> = { 'content-type': 'application/json', ...(config.jupiterKey ? { 'x-api-key': config.jupiterKey } : {}) };
-    const q = new URLSearchParams({ inputMint: PUMP_MINT, outputMint: config.coinMint, amount: pumpIn.toString(), slippageBps: String(config.burnSlippageBps) });
+    const q = new URLSearchParams({ inputMint, outputMint, amount: amount.toString(), slippageBps: String(slippageBps) });
     const quote = await json(await fetch(`${config.jupiterBase}/quote?${q}`, { headers, signal: AbortSignal.timeout(10_000) }));
     const swap = await json(await fetch(`${config.jupiterBase}/swap`, {
       method: 'POST', headers, signal: AbortSignal.timeout(15_000),
       body: JSON.stringify({ quoteResponse: quote, userPublicKey: me.publicKey.toBase58(), dynamicComputeUnitLimit: true, wrapAndUnwrapSol: true }),
     }));
-    const tx = VersionedTransaction.deserialize(Buffer.from(swap.swapTransaction, 'base64'));
-    await this.assertSwapIsSafe(tx, pumpIn, BigInt(quote.otherAmountThreshold), getAssociatedTokenAddressSync(this.coin, me.publicKey, true, program));
-    return this.send(tx, Number(swap.lastValidBlockHeight), onSigned);
+    return { tx: VersionedTransaction.deserialize(Buffer.from(swap.swapTransaction, 'base64')), lastValid: Number(swap.lastValidBlockHeight), minOut: BigInt(quote.otherAmountThreshold) };
   }
-  /** The swap is built by a third party, so prove what it does to our wallet before signing it. */
-  private async assertSwapIsSafe(tx: VersionedTransaction, maxIn: bigint, minOut: bigint, coinAta: PublicKey) {
+
+  /**
+   * The swap is built by a third party, so prove what it does to our wallet before signing it: only we sign, no
+   * token account changes hands or gains a delegate, it spends no more than allowed and returns at least the quote.
+   * `spend` is the token account paid from, or null when paying in native SOL.
+   */
+  protected async assertSwap(tx: VersionedTransaction, o: { spend: PublicKey | null; maxSpend: bigint; out: PublicKey; minOut: bigint; maxSol: bigint }) {
     const me = this.me().publicKey;
-    const keys = tx.message.staticAccountKeys;
-    if (!keys[0]?.equals(me) || tx.message.header.numRequiredSignatures !== 1) throw new Error('swap: unexpected signers');
-    const pumpAta = this.pumpAta(me);
-    const [pumpBefore, coinAcc, solBefore] = await Promise.all([this.treasuryBalance(), this.conn.getAccountInfo(coinAta), this.conn.getBalance(me)]);
-    const coinBefore = coinAcc ? AccountLayout.decode(coinAcc.data.subarray(0, AccountLayout.span)).amount : 0n;
-    const sim = await this.conn.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true, accounts: { encoding: 'base64', addresses: [pumpAta, coinAta, me].map((k) => k.toBase58()) } });
+    if (!tx.message.staticAccountKeys[0]?.equals(me) || tx.message.header.numRequiredSignatures !== 1) throw new Error('swap: unexpected signers');
+    const tokens = [o.spend, o.out].filter((k): k is PublicKey => k !== null);
+    const watch = [...tokens, me];
+    const before = await this.conn.getMultipleAccountsInfo(watch);
+    const sim = await this.conn.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true, accounts: { encoding: 'base64', addresses: watch.map((k) => k.toBase58()) } });
     if (sim.value.err) throw new Error(`swap would fail: ${JSON.stringify(sim.value.err)}`);
-    const [p, c, s] = sim.value.accounts ?? [];
-    for (const acc of [p, c]) {
-      const d = decode(acc?.data);
+    const after = sim.value.accounts ?? [];
+    const amount = (data: Buffer | null | undefined) => (data && data.length >= AccountLayout.span ? AccountLayout.decode(data.subarray(0, AccountLayout.span)).amount : 0n);
+    for (let i = 0; i < tokens.length; i++) {
+      const d = decode(after[i]?.data);
       if (!d || !d.owner.equals(me) || d.delegateOption !== 0 || d.closeAuthorityOption !== 0) throw new Error('swap: token account authority would change');
     }
-    if (pumpBefore - decodeAmount(p?.data) > maxIn) throw new Error('swap: spends more $PUMP than allowed');
-    if (decodeAmount(c?.data) - coinBefore < minOut) throw new Error('swap: returns less than quoted');
-    if (solBefore - (s?.lamports ?? 0) > 10_000_000) throw new Error('swap: spends too much SOL');
+    let k = 0;
+    if (o.spend) {
+      const spent = amount(before[k]?.data) - decodeAmount(after[k]?.data);
+      if (spent > o.maxSpend) throw new Error('swap: spends more than allowed');
+      k++;
+    }
+    if (decodeAmount(after[k]?.data) - amount(before[k]?.data) < o.minOut) throw new Error('swap: returns less than quoted');
+    const solSpent = BigInt(before[watch.length - 1]?.lamports ?? 0) - BigInt(after[watch.length - 1]?.lamports ?? 0);
+    if (solSpent > o.maxSol) throw new Error('swap: spends too much SOL');
+  }
+
+  async buyback(usdcIn: bigint, onSigned: OnSigned): Promise<Outcome> {
+    const me = this.me();
+    const { program } = await this.coinMeta();
+    const { tx, lastValid, minOut } = await this.jupiter(USDC_MINT, this.coin.toBase58(), usdcIn, config.burnSlippageBps);
+    await this.assertSwap(tx, { spend: this.usdcAta(me.publicKey), maxSpend: usdcIn, out: getAssociatedTokenAddressSync(this.coin, me.publicKey, true, program), minOut, maxSol: SWAP_SOL_SLACK });
+    return this.send(tx, lastValid, onSigned);
+  }
+
+  /** This wallet's SOL and token change in one confirmed transaction. Throws until the RPC has indexed it. */
+  protected async deltas(sig: string, mint: string): Promise<{ lamports: bigint; tokens: bigint }> {
+    const tx = await this.conn.getParsedTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' });
+    if (!tx?.meta) throw new Error('transaction not indexed yet');
+    const owner = this.treasury!.toBase58();
+    const i = tx.transaction.message.accountKeys.findIndex((k) => k.pubkey.toBase58() === owner);
+    const lamports = i < 0 ? 0n : BigInt(tx.meta.postBalances[i] ?? 0) - BigInt(tx.meta.preBalances[i] ?? 0);
+    const sum = (l: typeof tx.meta.preTokenBalances) => (l ?? []).filter((b) => b.mint === mint && b.owner === owner).reduce((n, b) => n + BigInt(b.uiTokenAmount.amount), 0n);
+    return { lamports, tokens: sum(tx.meta.postTokenBalances) - sum(tx.meta.preTokenBalances) };
   }
   async bought(sig: string) {
-    const tx = await this.conn.getParsedTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' });
-    if (!tx?.meta) throw new Error('swap transaction not indexed yet');
-    const owner = this.treasury!.toBase58();
-    const sum = (l: typeof tx.meta.preTokenBalances) => (l ?? []).filter((b) => b.mint === config.coinMint && b.owner === owner).reduce((n, b) => n + BigInt(b.uiTokenAmount.amount), 0n);
-    return sum(tx.meta.postTokenBalances) - sum(tx.meta.preTokenBalances);
+    return (await this.deltas(sig, this.coin.toBase58())).tokens;
   }
-  async burn(which: 'pump' | 'coin', amount: bigint, onSigned: OnSigned) {
+  async burn(which: 'quote' | 'coin', amount: bigint, onSigned: OnSigned) {
+    // USDC is never burned: it is what callers are paid in. Burns are always bought coins.
+    if (which !== 'coin') throw new Error('only the coin is burned');
     const me = this.me();
-    const { mint, program, decimals } = which === 'pump'
-      ? { mint: PUMP, program: TOKEN_2022_PROGRAM_ID, decimals: PUMP_DECIMALS }
-      : { mint: this.coin, ...(await this.coinMeta()) };
-    const ata = getAssociatedTokenAddressSync(mint, me.publicKey, true, program);
-    const { tx, lastValid } = await this.build([createBurnCheckedInstruction(ata, mint, me.publicKey, amount, decimals, [], program)], 60_000);
+    const { program, decimals } = await this.coinMeta();
+    const ata = getAssociatedTokenAddressSync(this.coin, me.publicKey, true, program);
+    const { tx, lastValid } = await this.build([createBurnCheckedInstruction(ata, this.coin, me.publicKey, amount, decimals, [], program)], 60_000);
     return this.send(tx, lastValid, onSigned);
   }
 }

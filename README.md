@@ -1,47 +1,51 @@
-# Callout
+# Holler
 
-Holders call out the coin on pump.fun. Creator fees (in $PUMP) go 80% to them, 20% to burning supply.
+A pump.fun launchpad. Anyone can launch a coin here; it trades on pump.fun against SOL. Its creator fees are claimed in SOL, swapped to USDC, and paid to the holders who call it out on pump.fun. Some of every fee buys the coin back and burns it, and a share goes to the callers of the platform coin.
 
 ## Run
 
 ```
 npm install
 npm run build
-npm start          # http://127.0.0.1:8787, demo data until .env is filled
-npm test           # reward maths and engine
+npm start          # http://127.0.0.1:8787, demo coins until .env is filled
+npm test           # reward maths, money accounting, engine, rolling updates
 npm run doctor     # read-only check of your setup
 ```
 
-Modes: **demo** (no `COIN_MINT`), **dry-run** (real callouts, nothing sent), **live** (`LIVE_PAYOUTS=true` plus the treasury key).
+Modes: **demo** (no `LAUNCHPAD_SECRET_KEY` outside production, or `DEMO=true`), **dry-run** (real coins and callouts, nothing sent; launches open once the key is set), **live** (`LIVE_PAYOUTS=true` plus the key).
 
-## Going live
+## How the money moves
 
-1. Launch the coin paired with **$PUMP** as its quote. That is what makes creator fees arrive in $PUMP. Do not add fee sharing unless the treasury is a recipient.
-2. No API key is needed. Every 10 seconds (`POLL_MS`) the server reads pump.fun's holder feed (`/mint-positions`: every current holder's callout with dev flag, low quality, squad, followers and account age) and, as a backup, gmgn's list of every callout on the coin, which is skipped whenever gmgn does not answer. Callouts from holders with at least 0.1% are judged first, smallest bag up, always on pump.fun's data; a callout only gmgn has is checked against pump.fun's `/callout/{id}` and account overview, and waits for the next read if pump.fun does not answer. Holders below 0.1% are turned away on the spot. Calling out first and buying in later never counts: gmgn records the non-holder at once, and while gmgn is down, a callout that only shows up in the holder feed after it was made is refused as late. Both sites only answer browser-like clients, so requests carry Chrome's TLS fingerprint (the `impit` package).
-3. Copy `.env.example` to `.env`. Run dry-run first with `TREASURY_PUBKEY`, then `npm run doctor`.
-4. Use a fresh creator wallet. All $PUMP in it counts as fee income and is split 80/20, so keep personal $PUMP elsewhere. Keep some SOL in it: each first-time recipient costs about 0.002 SOL for their token account.
-5. Use a paid RPC: the holder list is one `getProgramAccounts` call every 30 seconds, which the public RPC often refuses. Run exactly one server process per `data/callout.db`, and back that file up: it is the payout ledger.
+```
+creator fees (SOL)  ->  launchpad wallet, per coin, from its own pump.fun fee-sharing vault
+                        |- PLATFORM_PCT (30%)  -> credited to the platform coin
+                        '- the rest            -> swapped SOL -> USDC through Jupiter
+                                                  |- CALLER_PCT share -> the coin's reward pot (USDC)
+                                                  '- BURN_PCT share   -> buys the coin back, burns it
+```
+
+* Every coin is created paired with SOL, with a fee-sharing config whose vault pays the launchpad wallet, so each coin's fees are claimed on their own.
+* All coins share one wallet. `server/launchpad/registry.ts` keeps them apart: a coin can only swap the SOL its own claims brought in, and only pay out the USDC its own swaps made. SOL in a swap is written down before it is sent, so it is never swapped twice; USDC counts once the swap confirms.
+* The platform coin (`PLATFORM_MINT`) is launched through the site like any other. It keeps all of its own fees and is credited `PLATFORM_PCT` of everyone else's. Until it is set, those shares wait in the wallet.
+* Every claim, swap, payout and burn is measured from its own confirmed transaction. Every signature is saved before broadcast and retried only once its blockhash is provably dead, so a crash cannot pay twice. Jupiter swaps are simulated and refused if they would change any token account's authority, spend more than allowed or return less than quoted.
 
 ## The reward
 
 ```
-reward = reward pot x 2.5% x min(1, 0.2 + 0.5 x bag x streak + 0.3 x reach) x queue weight
+reward = coin's reward pot x 2.5% x min(1, 0.2 + 0.5 x bag x streak + 0.3 x reach) x queue weight
 bag    = min(1, share of supply / 2%) ^ 0.75   (0.1% of supply needed to qualify)
 reach  = min(1, log(pump.fun followers / 10) / log(10,000 / 10))
 streak = min(3, 1.1 ^ paid callouts in a row that kept the bag)
-burn   = reward x 20/80, from the burn pot
 ```
 
-* A share of the pot can never overdraw it. One callout takes at most 2.5% (5% with full queue weight).
-* Every qualifying callout starts at 0.2 (`BASE_SCORE`): 0.5% of the pot, $5 per $1,000. A full bag adds 0.5 (`BAG_WEIGHT`) and full reach the other 0.3, each on its own, so more followers pay at any bag size.
-* Holding compounds. Each paid callout in a row where the wallet held at least what it held at its last one grows the bag part 10% (`HOLD_STREAK_RATE`), up to 3x (`HOLD_STREAK_CAP`). A callout dropped for selling, or a smaller bag than last time, restarts it. The streak is worked out from the ledger, so it needs no new columns.
-* The base and reach are paid per callout, so splitting one bag across several pump.fun accounts earns more than holding it in one. The entry rules (0.1% held, 10 followers), the 2-minute hold and the per-account cooldown are what limit that. Lower `BASE_SCORE` if farming shows up.
-* Below `MIN_PAYOUT_PUMP`, or while the pot is below `POT_FLOOR_PUMP`, a callout waits in the queue. Oldest first. Each hour adds 5% weight up to 2x. Someone whose share is still too small does not block the people behind. Tickets expire after 7 days, or at once if the holder sells.
+Paid in USDC. Below `MIN_PAYOUT_USDC`, or while the pot is below `POT_FLOOR_USDC`, a callout waits in line, oldest first, gaining weight each hour. Launchers cannot earn from their own coin.
 
 ## Guards
 
-Holding is read from the chain, sampled through the hold window, and re-read just before paying; the lowest value counts. One wallet or pump.fun account can earn again every 10 minutes (`COOLDOWN_MINUTES`), with one callout in progress at a time. Dev, squad, low-quality and under-10-follower accounts are refused; new accounts are fine (`MIN_ACCOUNT_AGE_DAYS` sets a minimum, from pump.fun's account date).
+Holding is read from the chain, sampled through the 2-minute hold, and re-read just before paying; the lowest value counts. One wallet or pump.fun account earns at most every 10 minutes, with one callout in line at a time. Dev, squad, low-quality and under-10-follower accounts are refused.
 
-Every payout's signature is saved before broadcast and only retried once its blockhash is provably dead, so a crash cannot pay twice. The buyback swap is simulated and refused if it would spend too much, return too little, or change any token authority.
+pump.fun data (names, avatars, text, follower counts) is dropped after 24 hours. The ledgers keep wallets and amounts.
 
-pump.fun data (names, avatars, text, follower counts) is dropped after 24 hours, as the API terms require. The ledger keeps wallets and amounts.
+## Going live
+
+See [docs/DOKPLOY.md](docs/DOKPLOY.md). In short: a fresh launchpad wallet with ~0.1 SOL, a paid RPC, a Jupiter API key, `npm run doctor`, launch the platform coin through the site and set `PLATFORM_MINT`, then `LIVE_PAYOUTS=true`. Back up the `data/` folder: it is the payout ledger.

@@ -11,46 +11,43 @@ const PUB = key.publicKey.toBase58();
 const has = (list: string[], bit: string) => list.some((m) => m.includes(bit));
 
 test('a correct setup passes', () => {
-  const f = checkSettings({ COIN_MINT: MINT, RPC_URL: 'https://mainnet.helius-rpc.com/?api-key=abc', TREASURY_PUBKEY: PUB, LIVE_PAYOUTS: 'false', MIN_HOLD_BPS: '10', REWARDS_START: '2026-12-01T00:00:00Z' });
+  const f = checkSettings({ PLATFORM_MINT: MINT, RPC_URL: 'https://mainnet.helius-rpc.com/?api-key=abc', LAUNCHPAD_SECRET_KEY: SECRET, LIVE_PAYOUTS: 'false', MIN_HOLD_BPS: '10' });
   assert.deepEqual(f, { errors: [], warnings: [] });
-  assert.deepEqual(checkSettings({ TREASURY_SECRET_KEY: SECRET, LIVE_PAYOUTS: 'true', COIN_MINT: MINT }), { errors: [], warnings: [] });
-  assert.deepEqual(checkSettings({ TREASURY_SECRET_KEY: JSON.stringify([...key.secretKey]) }).errors, []);
-  assert.deepEqual(checkSettings({}), { errors: [], warnings: [] }, 'nothing set: prelaunch or demo');
+  assert.deepEqual(checkSettings({ LAUNCHPAD_SECRET_KEY: JSON.stringify([...key.secretKey]), PLATFORM_MINT: MINT, LIVE_PAYOUTS: 'true' }), { errors: [], warnings: [] });
+  assert.deepEqual(checkSettings({}), { errors: [], warnings: [] }, 'nothing set: demo, or a closed launchpad');
 });
 
 test('an RPC URL without https:// is named, without printing its API key', () => {
-  const f = checkSettings({ RPC_URL: 'mainnet.helius-rpc.com/?api-key=SECRETKEY123' });
-  assert.ok(has(f.errors, 'RPC_URL must be a full URL starting with https://'));
-  assert.ok(!f.errors.join(' ').includes('SECRETKEY123'));
+  const f = checkSettings({ RPC_URL: 'mainnet.helius-rpc.com/?api-key=SECRETSECRET' });
+  assert.ok(has(f.errors, 'RPC_URL must be a full URL'));
+  assert.ok(!f.errors.join(' ').includes('SECRETSECRET'));
 });
 
 test('a mint with quotes, a typo or a wrong length is named', () => {
-  assert.ok(has(checkSettings({ COIN_MINT: `"${MINT}"` }).errors, 'COIN_MINT has quotes around it'));
-  assert.ok(has(checkSettings({ COIN_MINT: MINT.slice(0, 30) }).errors, 'COIN_MINT is not a Solana address'));
-  assert.ok(has(checkSettings({ COIN_MINT: MINT.replace('V', '0') }).errors, 'COIN_MINT is not a Solana address'), 'base58 has no 0');
+  assert.ok(has(checkSettings({ PLATFORM_MINT: `"${MINT}"` }).errors, 'quotes'));
+  assert.ok(has(checkSettings({ PLATFORM_MINT: MINT.slice(0, -3) + '0OI' }).errors, 'not a Solana address'));
+  assert.ok(has(checkSettings({ PLATFORM_MINT: SECRET }).errors, 'PRIVATE key'));
 });
 
 test('keys in the wrong place are caught, and no part of a private key is printed', () => {
-  const f = checkSettings({ TREASURY_PUBKEY: SECRET });
-  assert.ok(has(f.errors, 'TREASURY_PUBKEY looks like a PRIVATE key'));
-  assert.ok(!f.errors.join(' ').includes(SECRET.slice(0, 6)));
-  assert.ok(has(checkSettings({ TREASURY_SECRET_KEY: PUB }).errors, 'looks like a public address'));
-  assert.ok(has(checkSettings({ TREASURY_SECRET_KEY: '[1,2,3]' }).errors, 'array of exactly 64 numbers'));
-  assert.ok(has(checkSettings({ TREASURY_SECRET_KEY: 'not-a-key' }).errors, 'not a valid key'));
-  const bad = checkSettings({ TREASURY_SECRET_KEY: SECRET.slice(0, -3) + 'abc' });
-  assert.ok(!bad.errors.join(' ').includes(SECRET.slice(0, 6)));
+  const f = checkSettings({ LAUNCHPAD_SECRET_KEY: PUB });
+  assert.ok(has(f.errors, 'looks like a public address'));
+  const g = checkSettings({ LAUNCHPAD_SECRET_KEY: SECRET.slice(0, -4) });
+  assert.ok(has(g.errors, 'not a valid key'));
+  assert.ok(!g.errors.join(' ').includes(SECRET.slice(0, 10)));
+  assert.ok(has(checkSettings({ LAUNCHPAD_SECRET_KEY: SECRET, PLATFORM_MINT: PUB }).errors, 'PLATFORM_MINT is the launchpad wallet'));
 });
 
-test('numbers, dates and names that cannot be read are named', () => {
-  assert.ok(has(checkSettings({ POLL_MS: '10s' }).errors, 'POLL_MS must be a plain number'));
-  assert.ok(has(checkSettings({ REWARDS_START: 'tomorrow' }).errors, 'REWARDS_START must be a date'));
-  assert.ok(has(checkSettings({ 'COIN_MINT ': MINT }).errors, 'the name has extra spaces'));
-  assert.ok(has(checkSettings({ 'export COIN_MINT': MINT }).errors, 'Write it as COIN_MINT='));
+test('numbers and names that cannot be read are named', () => {
+  assert.ok(has(checkSettings({ MIN_PAYOUT_USDC: 'ten' }).errors, 'MIN_PAYOUT_USDC must be a plain number'));
+  assert.ok(has(checkSettings({ LAUNCH_FEE_SOL: '-1' }).errors, 'cannot be negative'));
+  assert.ok(has(checkSettings({ 'export PLATFORM_MINT': MINT }).errors, 'extra spaces or "export"'));
+  assert.ok(has(checkSettings({ CALLER_PCT: '70' }).errors, 'add up to 100: they add up to 110'));
 });
 
 test('values that would quietly do the wrong thing are warned about', () => {
-  assert.ok(has(checkSettings({ LIVE_PAYOUTS: 'True' }).warnings, 'keeps payouts off'));
-  assert.ok(has(checkSettings({ LIVE_PAYOUTS: 'true' }).warnings, 'does nothing without TREASURY_SECRET_KEY'));
-  assert.ok(has(checkSettings({ TREASURY_SECRET_KEY: SECRET, TREASURY_PUBKEY: MINT }).warnings, 'different wallets'));
-  assert.ok(has(checkSettings({ BURN_MODE: 'burn' }).warnings, 'BURN_MODE should be buyback or direct'));
+  assert.ok(has(checkSettings({ LIVE_PAYOUTS: 'yes' }).warnings, 'Anything but exactly "true"'));
+  assert.ok(has(checkSettings({ LIVE_PAYOUTS: 'true' }).warnings, 'does nothing without LAUNCHPAD_SECRET_KEY'));
+  assert.ok(has(checkSettings({ LAUNCHPAD_SECRET_KEY: SECRET }).warnings, 'PLATFORM_MINT is not set'));
+  assert.ok(has(checkSettings({ COIN_MINT: MINT, TREASURY_SECRET_KEY: SECRET }).warnings, 'from the old Callout setup'));
 });

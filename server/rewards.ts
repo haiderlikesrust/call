@@ -1,10 +1,10 @@
 // Pure reward maths. No I/O, so every rule here is unit-tested.
 // Token amounts are bigint base units; only the dimensionless score is a float.
 // The site's calculator imports this file too, so what it shows is what the engine pays.
-import { PUMP_DECIMALS } from './constants.ts';
+import { USDC_DECIMALS } from './constants.ts';
 import type { Rules } from './config.ts';
 
-export const UNIT = 10n ** BigInt(PUMP_DECIMALS);
+export const UNIT = 10n ** BigInt(USDC_DECIMALS);
 export const toUnits = (whole: number): bigint => BigInt(Math.round(whole * Number(UNIT)));
 const PPB = 1_000_000_000n;
 

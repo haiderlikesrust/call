@@ -8,9 +8,9 @@ import { join } from 'node:path';
 import { LeaderLock } from '../server/leader.ts';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const dir = () => mkdtempSync(join(tmpdir(), 'callout-'));
+const dir = () => mkdtempSync(join(tmpdir(), 'holler-'));
 const start = (port: number, data: string): ChildProcess =>
-  fork('server/index.ts', { stdio: ['ignore', 'ignore', 'inherit', 'ipc'], env: { ...process.env, NODE_ENV: 'production', DEMO: '', PUMP_API_KEY: '', COIN_MINT: '', HOST: '127.0.0.1', PORT: String(port), DB_PATH: join(data, 'callout.db') } });
+  fork('server/index.ts', { stdio: ['ignore', 'ignore', 'inherit', 'ipc'], env: { ...process.env, NODE_ENV: 'production', DEMO: '', LAUNCHPAD_SECRET_KEY: '', PLATFORM_MINT: '', HOST: '127.0.0.1', PORT: String(port), DATA_DIR: data } });
 const health = async (port: number) => {
   try { return (await (await fetch(`http://127.0.0.1:${port}/api/health`)).json()) as { ok: boolean; state: string; mode: string }; } catch { return null; }
 };
@@ -39,7 +39,7 @@ test('rolling update: the new server serves while standing by, then takes over, 
   await until(18788, 'standby');
   const h = (await health(18788))!;
   assert.equal(h.ok, true, 'standby is healthy, so Swarm may retire the old one');
-  assert.equal(h.mode, 'prelaunch', 'production without keys never shows invented data');
+  assert.equal(h.mode, 'dry-run', 'production without keys never shows invented data');
 
   // Like the proxy: old server first, new one as soon as the old refuses.
   let ok = 0;
@@ -50,7 +50,7 @@ test('rolling update: the new server serves while standing by, then takes over, 
       let done = false;
       for (const port of [18787, 18788]) {
         try {
-          const r = await fetch(`http://127.0.0.1:${port}/api/state`);
+          const r = await fetch(`http://127.0.0.1:${port}/api/coins`);
           await r.text();
           if (r.status === 200) { done = true; break; }
           bad.push(`${port} ${r.status}`);

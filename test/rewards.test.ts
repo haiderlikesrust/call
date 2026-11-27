@@ -9,13 +9,15 @@ const pct = (p: number) => (SUPPLY * BigInt(Math.round(p * 10_000))) / 1_000_000
 /** The configured holding range, in % of supply: qualify at MIN, full bag credit at FULL. */
 const MIN = rules.minHoldBps / 100;
 const FULL = rules.holdFullBps / 100;
+/** The ratio maths at a round 80/20; a coin's real ratio comes from CALLER_PCT and BURN_PCT. */
+const r80 = { ...rules, rewardBps: 8000 };
 
 test('80/20 split loses nothing to rounding', () => {
   for (const n of [0n, 1n, 3n, 7n, 999_999n, 123_456_789_123n]) {
-    const s = splitIntake(n, rules);
+    const s = splitIntake(n, r80);
     assert.equal(s.reward + s.burn, n);
   }
-  assert.deepEqual(splitIntake(1_000n, rules), { reward: 800n, burn: 200n });
+  assert.deepEqual(splitIntake(1_000n, r80), { reward: 800n, burn: 200n });
 });
 
 test('holding and followers both raise the reward, strictly, until their caps', () => {
@@ -65,9 +67,9 @@ test('rewards move with the reward pool: double the pool, double the reward', ()
 });
 
 test('every payment releases a burn in the same 80:20 ratio', () => {
-  assert.equal(burnFor(800n, 10_000n, rules), 200n);
-  assert.equal(burnFor(800n, 50n, rules), 50n);
-  const d = drain([{ id: 'a', score: 0.5, readyAt: 0 }], { reward: toUnits(800_000), burn: toUnits(200_000) }, 0, rules);
+  assert.equal(burnFor(800n, 10_000n, r80), 200n);
+  assert.equal(burnFor(800n, 50n, r80), 50n);
+  const d = drain([{ id: 'a', score: 0.5, readyAt: 0 }], { reward: toUnits(800_000), burn: toUnits(200_000) }, 0, r80);
   assert.equal(d.payments[0]!.burn * 4n, d.payments[0]!.amount);
 });
 
@@ -92,14 +94,14 @@ test('waiting in the queue adds weight, up to a cap', () => {
 
 test('reconcile: deposits split 80/20, withdrawals shrink both pots, totals always match the wallet', () => {
   const pots = { reward: 800n, burn: 200n };
-  const up = reconcile(2_000n, pots, rules);
+  const up = reconcile(2_000n, pots, r80);
   assert.deepEqual([up.reward, up.burn, up.intake], [1_600n, 400n, 1_000n]);
   for (const chain of [0n, 1n, 333n, 999n, 1_000n, 1_001n, 123_457n]) {
-    const r = reconcile(chain, pots, rules);
+    const r = reconcile(chain, pots, r80);
     assert.equal(r.reward + r.burn, chain);
     assert.ok(r.reward >= 0n && r.burn >= 0n);
   }
-  assert.equal(reconcile(0n, { reward: 0n, burn: 0n }, rules).intake, 0n);
+  assert.equal(reconcile(0n, { reward: 0n, burn: 0n }, r80).intake, 0n);
 });
 
 test('every qualifying callout starts from the base share, and bag and reach add to it', () => {

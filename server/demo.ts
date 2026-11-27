@@ -1,4 +1,4 @@
-// Stand-ins for pump.fun and Solana so the site runs before the coin exists.
+// Stand-ins for pump.fun and Solana so the site runs with invented coins in demo mode.
 // They drive the real engine with the real reward maths; only the inputs are invented.
 import { randomBytes } from 'node:crypto';
 import bs58 from 'bs58';
@@ -9,7 +9,7 @@ import { UNIT } from './rewards.ts';
 const pick = <T>(a: readonly T[]): T => a[Math.floor(Math.random() * a.length)]!;
 const id = (n = 32) => bs58.encode(randomBytes(n));
 const NAMES = ['demo_moss', 'demo_kiosk', 'demo_lantern', 'demo_pickle', 'demo_tugboat', 'demo_quartz', 'demo_biscuit', 'demo_static', 'demo_orchid', 'demo_rivet', 'demo_gumdrop', 'demo_falcon', 'demo_wicker', 'demo_turbine', 'demo_clover', 'demo_marble', 'demo_saffron', 'demo_pylon'] as const;
-const LINES = ['getting paid to say what i was going to say anyway', 'every callout feeds the furnace. i like the furnace', 'bought, held, called it out. that is the whole strategy', 'queue is moving again, pot just refilled', 'small bag, loud mouth, still got a drop', 'fees in $PUMP, rewards in $PUMP, supply goes down', 'my followers asked what i am holding. this', 'two minutes of not selling is the easiest job i have had'] as const;
+const LINES = ['getting paid in usdc to say what i was going to say anyway', 'every callout buys some back and burns it. love that', 'bought, held, called it out. that is the whole strategy', 'queue is moving again, pot just refilled', 'small bag, loud mouth, still got paid', 'fees in sol, rewards in usdc, supply goes down', 'my followers asked what i am holding. this', 'two minutes of not selling is the easiest job i have had', 'dev launched on holler so the callers eat first', 'chart looks good, pot looks better'] as const;
 const SUPPLY = 1_000_000_000n * UNIT;
 
 interface Person { wallet: string; name: string; followers: number; bag: bigint; born: number }
@@ -86,9 +86,9 @@ export class DemoChain implements Chain {
     return 'confirmed';
   }
   async bought(sig: string) { return this.w.swaps.get(sig) ?? 0n; }
-  async burn(which: 'pump' | 'coin', amount: bigint, onSigned: OnSigned): Promise<Outcome> {
+  async burn(which: 'quote' | 'coin', amount: bigint, onSigned: OnSigned): Promise<Outcome> {
     onSigned(id(64), 0);
-    if (which === 'pump') this.w.treasury -= amount;
+    if (which === 'quote') this.w.treasury -= amount;
     else this.w.supplyNow -= amount;
     return 'confirmed';
   }

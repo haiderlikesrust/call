@@ -118,7 +118,7 @@ export function toRow(l: Listed, a: Account | null): Row {
 }
 
 /** Spaces calls evenly under a per-minute allowance, and holds them all when a site says to wait. */
-class Lane {
+export class Lane {
   private next = 0;
   private readonly gap: number;
   constructor(perMinute: number) { this.gap = 60_000 / perMinute; }
@@ -137,11 +137,26 @@ const BROWSER = { accept: 'application/json, text/plain, */*', 'accept-language'
 const PUMP = { ...BROWSER, origin: 'https://pump.fun', referer: 'https://pump.fun/' };
 const GMGN = { ...BROWSER, referer: 'https://gmgn.ai/' };
 
+export type Lanes = Record<'positions' | 'gmgn' | 'callout' | 'overview', Lane>;
+/** pump.fun allows 60 a minute on the feed; the overview states no limit, so it gets a cautious 30. */
+export const mainLanes = (): Lanes => ({ positions: new Lane(50), gmgn: new Lane(40), callout: new Lane(50), overview: new Lane(30) });
+
+export interface SourceOpts {
+  /** The coin to read. */
+  mint: string;
+  /** Rate limits, shared by every source handed the same object (the launchpad's coins share one set). */
+  lanes?: Lanes;
+  /** Read gmgn as a backup. On by default. */
+  gmgn?: boolean;
+  everyMs?: number;
+}
+
 export class LiveSource implements Source {
   health = { ok: true, note: 'starting', remaining: null as number | null };
-  readonly everyMs = config.pollMs;
-  // pump.fun allows 60 a minute on the feed; the overview states no limit, so it gets a cautious 30.
-  private readonly lanes = { positions: new Lane(50), gmgn: new Lane(40), callout: new Lane(50), overview: new Lane(30) };
+  readonly everyMs: number;
+  readonly mint: string;
+  private readonly lanes: Lanes;
+  private readonly useGmgn: boolean;
   /** Why gmgn was last skipped, or null while it answers. */
   backup: string | null = null;
   /** One reused connection: a steady browser-like client, not a new handshake per call. */
@@ -149,11 +164,18 @@ export class LiveSource implements Source {
   private refused = 0;
   private readonly overviews = new Map<string, { at: number; o: Overview }>();
 
+  constructor(o: SourceOpts) {
+    this.mint = o.mint;
+    this.lanes = o.lanes ?? mainLanes();
+    this.useGmgn = o.gmgn ?? true;
+    this.everyMs = o.everyMs ?? 10_000;
+  }
+
   /**
    * Per-callout pump.fun lookups never queue behind a pause it asked for: they fail at once and the caller asks
    * again on its next round, so one slow site cannot stall intake. Feed and gmgn reads wait their turn.
    */
-  private async get(lane: keyof LiveSource['lanes'], url: string, headers: Record<string, string>): Promise<{ status: number; body: any }> {
+  private async get(lane: keyof Lanes, url: string, headers: Record<string, string>): Promise<{ status: number; body: any }> {
     const l = this.lanes[lane];
     if ((lane === 'callout' || lane === 'overview') && l.wait() > 2_000) throw new Error(`pump.fun ${lane}: pausing ${Math.ceil(l.wait() / 1000)}s`);
     await l.turn();
@@ -182,9 +204,9 @@ export class LiveSource implements Source {
   async positions(page: number): Promise<{ items: Fed[]; hasMore: boolean }> {
     try {
       const q = new URLSearchParams({ sortBy: 'LATEST', withThesis: 'true', includeProfile: 'true', updatesLimit: '0', pageSize: '50', page: String(page) });
-      const { body } = await this.get('positions', `${config.pumpFrontendBase}/mint-positions/${config.coinMint}?${q}`, PUMP);
+      const { body } = await this.get('positions', `${config.pumpFrontendBase}/mint-positions/${this.mint}?${q}`, PUMP);
       if (!Array.isArray(body?.positions)) throw new Error('pump.fun feed: unexpected answer');
-      const items = body.positions.map((p: any) => parsePosition(p, config.coinMint)).filter((x: Fed | null): x is Fed => x !== null);
+      const items = body.positions.map((p: any) => parsePosition(p, this.mint)).filter((x: Fed | null): x is Fed => x !== null);
       this.health = { ...this.health, ok: true, note: this.backup ? `live; gmgn backup off (${this.backup})` : 'live' };
       return { items, hasMore: body.hasMore === true && body.positions.length > 0 };
     } catch (e) {
@@ -194,17 +216,18 @@ export class LiveSource implements Source {
   }
 
   async callouts() {
+    if (!this.useGmgn) return null;
     try {
       const out: Listed[] = [];
       let cursor = '';
       let oldest = Date.now();
       for (let page = 0; page < 10; page++) {
-        const q = new URLSearchParams({ from_app: 'gmgn', os: 'web', app_lang: 'en-US', chain: 'sol', token: config.coinMint, platforms: 'pump', limit: '100' });
+        const q = new URLSearchParams({ from_app: 'gmgn', os: 'web', app_lang: 'en-US', chain: 'sol', token: this.mint, platforms: 'pump', limit: '100' });
         if (cursor) q.set('cursor', cursor);
         const { body } = await this.get('gmgn', `${config.gmgnBase}/vas/api/v1/callout/token?${q}`, GMGN);
         if (body?.code !== 0 || !Array.isArray(body.data?.list)) throw new Error(`gmgn: ${body?.message || 'unexpected answer'}`);
         for (const it of body.data.list) {
-          const l = parseListed(it, config.coinMint);
+          const l = parseListed(it, this.mint);
           if (l) { out.push(l); oldest = Math.min(oldest, l.createdAt); }
         }
         cursor = typeof body.data.next_cursor === 'string' ? body.data.next_cursor : '';
@@ -236,7 +259,7 @@ export class LiveSource implements Source {
   async account(l: Listed) {
     const { status, body } = await this.get('callout', `${config.pumpFrontendBase}/callout/${l.calloutId}`, PUMP);
     if (status === 404) return null;
-    const d = parseDetail(body, l, config.coinMint);
+    const d = parseDetail(body, l, this.mint);
     if (!d) throw new Error(`pump.fun callout ${l.calloutId.slice(0, 8)}: does not match gmgn`);
     const o = await this.overview(l.wallet, 60_000);
     if (!o) throw new Error(`pump.fun has no overview for ${l.wallet.slice(0, 6)}`);

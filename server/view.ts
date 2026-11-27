@@ -1,5 +1,5 @@
 // Builds the public snapshot. Only what the site shows; never keys, never raw API payloads.
-import { config, rules, PUMP_MINT, type Mode } from './config.ts';
+import { USDC_MINT, type Mode, type Split } from './config.ts';
 import type { Engine } from './engine.ts';
 import { aging, drain, rewardFor } from './rewards.ts';
 import type { Callout } from './store.ts';
@@ -17,7 +17,15 @@ function publicCallout(c: Callout, sig: string | null, est: number | null) {
 }
 export type PublicCallout = ReturnType<typeof publicCallout>;
 
-export function snapshot(e: Engine, mode: Mode, startedAt: number, build: string) {
+export interface ViewOpts {
+  /** The coin's own name and address. */
+  coin: { mint: string; symbol: string; xUrl: string };
+  /** How each fee claim is split, in percent. */
+  split: Split;
+}
+
+export function snapshot(e: Engine, mode: Mode, startedAt: number, build: string, o: ViewOpts) {
+  const rules = e.rules;
   const db = e.store.db;
   const pots = e.store.pots();
   const now = e.now();
@@ -35,18 +43,19 @@ export function snapshot(e: Engine, mode: Mode, startedAt: number, build: string
     wallet: string; username: string | null; avatar: string | null; followers: number | null; n: number; total: number }[];
   const burns = db.prepare("SELECT * FROM burns WHERE status = 'done' ORDER BY id DESC LIMIT 8").all() as { id: number; at: number; pump_in: string; coin_out: string | null; burn_sig: string }[];
   const stat = one<{ n: number; paid: number; total: number | null }>("SELECT COUNT(*) AS n, SUM(status = 'paid') AS paid, SUM(CASE WHEN status = 'paid' THEN CAST(amount AS REAL) END) / 1e6 AS total FROM callouts");
-  const burned = one<{ pump: number | null; coin: number | null }>("SELECT SUM(CAST(pump_in AS REAL)) / 1e6 AS pump, SUM(CAST(coin_out AS REAL)) / 1e6 AS coin FROM burns WHERE status = 'done'");
+  const burned = one<{ usdc: number | null; coin: number | null }>("SELECT SUM(CAST(pump_in AS REAL)) / 1e6 AS usdc, SUM(CAST(coin_out AS REAL)) / 1e6 AS coin FROM burns WHERE status = 'done'");
   const income = one<{ t: number | null }>('SELECT SUM(CAST(amount AS REAL)) / 1e6 AS t FROM intakes WHERE CAST(amount AS REAL) > 0').t ?? 0;
 
   return {
     at: now, mode, startedAt, build,
-    coin: { mint: config.coinMint, symbol: config.coinSymbol, pumpMint: PUMP_MINT, xUrl: config.xUrl, burnMode: config.burnMode },
+    coin: { ...o.coin, usdcMint: USDC_MINT },
+    split: o.split,
     pots: { reward: N(pots.reward), burn: N(pots.burn), due: N(pots.due) },
-    stats: { callouts: stat.n, paidCallouts: stat.paid ?? 0, paidOut: stat.total ?? 0, burnedPump: burned.pump ?? 0, burnedCoin: burned.coin ?? 0, income, queue: queue.length, pollMs: e.source.everyMs, holders: e.watching },
+    stats: { callouts: stat.n, paidCallouts: stat.paid ?? 0, paidOut: stat.total ?? 0, buybackUsdc: burned.usdc ?? 0, burnedCoin: burned.coin ?? 0, income, queue: queue.length, pollMs: e.source.everyMs, holders: e.watching },
     feed: feed.map(pub),
     queue: queue.slice(0, 40).map((c) => ({ ...pub(c), payableNow: payable.has(c.id) })),
     board: board.map((b) => ({ ...b })),
-    burns: burns.map((b) => ({ id: b.id, at: b.at, pump: N(b.pump_in), coin: b.coin_out ? N(b.coin_out) : null, sig: b.burn_sig })),
+    burns: burns.map((b) => ({ id: b.id, at: b.at, usdc: N(b.pump_in), coin: b.coin_out ? N(b.coin_out) : null, sig: b.burn_sig })),
     rules,
     health: { source: e.source.health.ok, note: e.source.health.note, problems: [...e.problems.keys()] },
   };

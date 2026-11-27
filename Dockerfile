@@ -15,7 +15,7 @@ RUN npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 
 FROM node:24-bookworm-slim AS app
 WORKDIR /app
-ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 TRUST_PROXY=true DB_PATH=/app/data/callout.db
+ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 TRUST_PROXY=true DATA_DIR=/app/data
 COPY --from=production-dependencies --chown=node:node /app/node_modules ./node_modules
 COPY --chown=node:node package.json ./
 COPY --chown=node:node server ./server

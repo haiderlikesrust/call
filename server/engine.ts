@@ -347,7 +347,7 @@ export class Engine extends EventEmitter {
     if (due < toUnits(this.o.minBurn)) return;
     let id = 0;
     if (this.o.burnMode === 'direct') {
-      const out = await this.chain.burn('pump', due, (sig, lastValid) => {
+      const out = await this.chain.burn('quote', due, (sig, lastValid) => {
         id = this.store.addBurn({ at: this.now(), kind: 'direct', status: 'burning', pump_in: due.toString(), burn_sig: sig, last_valid: lastValid });
       });
       if (out !== 'pending') this.finishBurn(this.store.openBurns().find((b) => b.id === id)!, out);

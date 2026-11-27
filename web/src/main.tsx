@@ -3,7 +3,6 @@ import { createRoot } from 'react-dom/client';
 import { MotionConfig } from 'motion/react';
 import '@fontsource-variable/geist';
 import '@fontsource-variable/geist-mono';
-import '@fontsource/bagel-fat-one/latin-400.css';
 import './styles.css';
 import { App } from './App.tsx';
 
@@ -16,9 +15,9 @@ class Recover extends Component<{ children: ReactNode }, { failed: boolean }> {
   static getDerivedStateFromError() { return { failed: true }; }
   componentDidCatch() {
     try {
-      const last = Number(sessionStorage.getItem('callout-recovered') ?? 0);
+      const last = Number(sessionStorage.getItem('holler-recovered') ?? 0);
       if (Date.now() - last > 60_000) {
-        sessionStorage.setItem('callout-recovered', String(Date.now()));
+        sessionStorage.setItem('holler-recovered', String(Date.now()));
         location.reload();
       }
     } catch { /* storage blocked: the button below still works */ }

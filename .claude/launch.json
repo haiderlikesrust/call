@@ -1,6 +1,6 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "callout", "runtimeExecutable": "npm", "runtimeArgs": ["start"], "port": 8787 }
+    { "name": "holler", "runtimeExecutable": "npm", "runtimeArgs": ["start"], "port": 8787 }
   ]
 }
