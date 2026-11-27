@@ -113,6 +113,7 @@ export function Launch({ list }: { list: CoinList | null }) {
                 : <p className="dim">No Solana wallet found in this browser. Install Phantom, Solflare or Backpack, then reload.</p>}
             <p className="cost">Costs {list ? list.feeSol : '…'} SOL launch fee, about 0.02 SOL pump.fun charges to create the coin, and the network fee{buy > 0 ? `, plus ${fmt(buy, 4)} SOL for your first buy` : ''}. You cannot earn from your own coin's callouts.</p>
             <button className="btn btn-big btn-wide" disabled={busy || !wallet || !!closed}>{STEP[step]}</button>
+            {!wallet && !closed && !busy && <p className="dim hint">Connect a wallet above to launch.</p>}
             {error && <p className="bad" role="alert">{error}</p>}
           </div>
         </div>

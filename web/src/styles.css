@@ -326,3 +326,4 @@ small { font-size: 0.8em; color: var(--muted); }
   html { scroll-behavior: auto; }
   .live-dot { animation: none; }
 }
+.hint { font-size: 0.85rem; text-align: center; margin-top: -4px; }
