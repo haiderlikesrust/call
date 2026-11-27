@@ -14,7 +14,7 @@ const NUMBERS = [
 ] as const;
 const URLS = ['RPC_URL', 'PUMP_FRONTEND_BASE', 'GMGN_BASE', 'JUPITER_BASE', 'SITE_URL', 'PUMP_IPFS_URL', 'X_URL'] as const;
 const CHOICES: Record<string, readonly string[]> = { LIVE_PAYOUTS: ['true', 'false'], DEMO: ['true', 'false'], TRUST_PROXY: ['true', 'false'] };
-const OTHER = ['LAUNCHPAD_SECRET_KEY', 'PLATFORM_MINT', 'EXCLUDE_WALLETS', 'JUPITER_API_KEY', 'SITE_NAME', 'DATA_DIR', 'HOST'] as const;
+const OTHER = ['LAUNCHPAD_SECRET_KEY', 'PLATFORM_MINT', 'EXCLUDE_WALLETS', 'HIDE_COINS', 'JUPITER_API_KEY', 'SITE_NAME', 'DATA_DIR', 'HOST'] as const;
 /** Settings from the Callout setup this site replaced. Nothing reads them any more. */
 const RETIRED: Record<string, string> = {
   COIN_MINT: 'PLATFORM_MINT (the platform coin, launched through the launchpad)',
@@ -103,6 +103,7 @@ export function checkSettings(env: Record<string, string | undefined>): Findings
   if (key && platform && key.publicKey.toBase58() === platform) out.errors.push('PLATFORM_MINT is the launchpad wallet. It should be the platform coin\'s mint address.');
   if (get('LIVE_PAYOUTS') === 'true' && !secret) out.warnings.push('LIVE_PAYOUTS=true does nothing without LAUNCHPAD_SECRET_KEY: this runs as a rehearsal with launches closed.');
   for (const w of get('EXCLUDE_WALLETS').split(',').map((s) => s.trim()).filter(Boolean)) address('EXCLUDE_WALLETS', w, out);
+  for (const m of get('HIDE_COINS').split(',').map((s) => s.trim()).filter(Boolean)) address('HIDE_COINS', m, out);
   return out;
 }
 

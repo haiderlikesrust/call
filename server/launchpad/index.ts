@@ -253,7 +253,8 @@ export class Launchpad {
   private buildList() {
     this.sync();
     const platform = this.platformMint;
-    const coins = [...this.running.values()].sort((a, b) => b.coin.created_at - a.coin.created_at)
+    // Hidden coins keep running (fees, swaps, payouts owed); they are only left off the site.
+    const coins = [...this.running.values()].filter((r) => !config.hiddenCoins.has(r.coin.mint)).sort((a, b) => b.coin.created_at - a.coin.created_at)
       .map((r) => ({ ...publicCoin(r.coin), platform: r.coin.mint === platform, ...this.stats(r) }));
     const sum = (k: 'paidOut' | 'paidCallouts' | 'feesSol' | 'toPlatformSol' | 'callouts') => coins.reduce((n, c) => n + c[k], 0);
     const v = {
@@ -265,6 +266,7 @@ export class Launchpad {
     return v;
   }
   view(mint: string, build: string) {
+    if (config.hiddenCoins.has(mint)) return null;
     this.sync();
     const r = this.running.get(mint);
     if (!r) {

@@ -43,6 +43,8 @@ test('numbers and names that cannot be read are named', () => {
   assert.ok(has(checkSettings({ LAUNCH_FEE_SOL: '-1' }).errors, 'cannot be negative'));
   assert.ok(has(checkSettings({ 'export PLATFORM_MINT': MINT }).errors, 'extra spaces or "export"'));
   assert.ok(has(checkSettings({ CALLER_PCT: '70' }).errors, 'add up to 100: they add up to 110'));
+  assert.deepEqual(checkSettings({ HIDE_COINS: `${MINT}, ${PUB}` }).errors, [], 'hidden coins: a comma-separated list of mints');
+  assert.ok(has(checkSettings({ HIDE_COINS: `${MINT},nope` }).errors, 'HIDE_COINS is not a Solana address'));
 });
 
 test('values that would quietly do the wrong thing are warned about', () => {

@@ -101,6 +101,8 @@ export const config = {
   /** SOL the launchpad wallet keeps for itself (network fees, new token accounts), on top of what coins are owed. */
   minSolReserve: num('MIN_SOL_RESERVE', 0.05),
   excludeWallets: new Set(list('EXCLUDE_WALLETS')),
+  /** Coins left off the site (list, totals, coin page). They keep running: fees, swaps and payouts carry on. */
+  hiddenCoins: new Set(list('HIDE_COINS')),
 };
 
 export const launchpad = {
