@@ -2,7 +2,7 @@
 import { EventEmitter } from 'node:events';
 import { type Mode, type Rules } from './config.ts';
 import type { Chain, Outcome } from './chain.ts';
-import { type Account, type Fed, type Listed, type Row, type Source, toRow } from './pumpApi.ts';
+import { type Account, type Fed, type Listed, type Row, type Source, eventKey, toRow } from './pumpApi.ts';
 import { drain, eligibility, reconcile, score, toUnits } from './rewards.ts';
 import { type Burn, type Callout, type Store, hash } from './store.ts';
 
@@ -68,9 +68,11 @@ export class Engine extends EventEmitter {
   private lastFeed = 0;
 
   /**
-   * One read. pump.fun's feed (current holders' callouts, newest first) is paged until it reaches a callout already
-   * recorded; `sweep` pages further regardless, in case a callout was slotted in below one. gmgn's list is added
-   * when it answers: it holds callouts the feed lacks, including non-holders, who are recorded and turned away.
+   * One read. pump.fun's feed lists current holders' callouts, each with its latest updates. Every update is its own
+   * event (see eventKey), so calling a coin out again by posting an update counts. The feed is ordered by when each
+   * callout was first posted, so a new update can sit on any page: it is read to the end (up to `pages`), not just
+   * until a known callout. gmgn's list is added when it answers: it holds callouts the feed lacks, including
+   * non-holders, who are recorded and turned away.
    *
    * Callouts from holders with at least the minimum bag (0.1% by default) are judged first, smallest bag up, on
    * pump.fun's data: the feed's own row, or the callout and account overview for one only gmgn has. When pump.fun
@@ -82,18 +84,13 @@ export class Engine extends EventEmitter {
     await this.guard('callouts', async () => {
       const now = this.now();
       const items = new Map<string, Fed & { fed: boolean }>();
-      const keep = (l: Listed) => now - l.createdAt <= MAX_AGE && !this.store.callout(hash(l.calloutId));
+      const keep = (l: Listed) => now - l.createdAt <= MAX_AGE && !this.store.callout(hash(eventKey(l)));
       let feedFailed: unknown = null;
       try {
         for (let n = 0; n < pages; n++) {
           const { items: page, hasMore } = await this.source.positions(n);
-          let reached = false;
-          for (const it of page) {
-            if (this.store.callout(hash(it.listed.calloutId))) reached = true;
-            else if (keep(it.listed)) items.set(it.listed.calloutId, { ...it, fed: true });
-          }
-          const oldest = page.at(-1)?.listed.createdAt ?? 0;
-          if (!hasMore || page.length === 0 || now - oldest > MAX_AGE || (reached && !opts.sweep)) break;
+          for (const it of page) if (keep(it.listed)) items.set(eventKey(it.listed), { ...it, fed: true });
+          if (!hasMore || page.length === 0) break;
         }
         this.coveredSince = this.coveredSince !== null && now - this.lastFeed <= 60_000 ? this.coveredSince : now;
         this.lastFeed = now;
@@ -102,7 +99,7 @@ export class Engine extends EventEmitter {
         this.coveredSince = null;
       }
       const listed = await this.source.callouts();
-      for (const l of listed ?? []) if (!items.has(l.calloutId) && keep(l)) items.set(l.calloutId, { listed: l, row: null, fed: false });
+      for (const l of listed ?? []) if (!items.has(eventKey(l)) && keep(l)) items.set(eventKey(l), { listed: l, row: null, fed: false });
       // Neither source answered: nothing to go on this time.
       if (feedFailed && !listed) throw feedFailed;
 
@@ -145,7 +142,7 @@ export class Engine extends EventEmitter {
       if (failed) throw failed;
     });
   }
-  /** Slow pass over more of the feed, in case a callout was slotted in below one already recorded. */
+  /** Slow pass over more of the feed, for coins with more holders than one read covers. */
   sweep(): Promise<void> { return this.poll({ pages: 20, sweep: true }); }
 
   async admit(r: Row, known?: bigint, late = false): Promise<void> {
@@ -159,12 +156,12 @@ export class Engine extends EventEmitter {
       this.rules,
     );
     this.store.insert({
-      id: hash(r.calloutId), callout_id: r.calloutId, wallet: r.wallet, user_hash: userHash,
+      id: hash(eventKey(r)), callout_id: r.calloutId, wallet: r.wallet, user_hash: userHash,
       created_at: r.createdAt, seen_at: now, status: reason ? 'rejected' : 'maturing', reason,
       username: r.username || null, avatar: r.avatar, thesis: r.thesis || null, likes: r.likes, followers: r.followers, api_at: now,
       min_balance: balance.toString(), supply: supply.toString(), score: reason ? 0 : score(balance, supply, r.followers, this.rules, this.store.holdStreak(r.wallet, balance, now)),
     });
-    this.emit('callout', hash(r.calloutId));
+    this.emit('callout', hash(eventKey(r)));
     this.emit('change');
   }
 

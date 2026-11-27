@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { rules as base } from '../server/config.ts';
 import type { Chain, OnSigned, Outcome } from '../server/chain.ts';
 import { Engine } from '../server/engine.ts';
-import { parseDetail, parseListed, parseOverview, parsePosition, toRow, type Row, type Source } from '../server/pumpApi.ts';
+import { eventKey, parseDetail, parseListed, parseOverview, parsePosition, parsePositionEvents, toRow, type Row, type Source } from '../server/pumpApi.ts';
 import { Store, hash } from '../server/store.ts';
 import { toUnits } from '../server/rewards.ts';
 
@@ -19,7 +19,7 @@ function rig() {
     gmgnDown: false, noProfile: new Set<string>(), readOrder: [] as string[],
   };
   const apply: (() => void)[] = [];
-  const listed = (x: Row) => ({ calloutId: x.calloutId, wallet: x.wallet, createdAt: x.createdAt, thesis: x.thesis, likes: x.likes, username: x.username, avatar: x.avatar, followers: x.followers });
+  const listed = (x: Row) => ({ calloutId: x.calloutId, wallet: x.wallet, createdAt: x.createdAt, thesis: x.thesis, likes: x.likes, username: x.username, avatar: x.avatar, followers: x.followers, ...(x.key ? { key: x.key } : {}) });
   const source: Source = {
     health: { ok: true, note: '', remaining: null },
     everyMs: 10_000,
@@ -68,7 +68,18 @@ function rig() {
     accountCreatedAt: now - 1e10, createdAt: now - 1000, isDev: false, isGroup: false, isPumpUser: true, lowQuality: false, ...x,
   });
   const call = (wallet: string, bag = SUPPLY / 200n, x: Partial<Row> = {}) => { bags.set(wallet, bag); const r = row(wallet, x); w.rows.unshift(r); return hash(r.calloutId); };
-  return { w, bags, store, make, call, tick: (ms: number) => { now += ms; }, apply };
+  /**
+   * An update on the wallet's existing callout, as pump.fun shows calling the coin out again. It rides on the old
+   * callout's place in the feed, which is ordered by when callouts were first posted.
+   */
+  const update = (wallet: string, n: number) => {
+    const at = w.rows.findIndex((x) => x.wallet === wallet && !x.key);
+    const orig = w.rows[at]!;
+    const u: Row = { ...orig, key: `${orig.calloutId}/u${n}`, createdAt: now - 1000, thesis: `update ${n}` };
+    w.rows.splice(at + 1, 0, u);
+    return hash(u.key!);
+  };
+  return { w, bags, store, make, call, update, tick: (ms: number) => { now += ms; }, apply };
 }
 
 test('happy path: callout matures, pays once, burns, and the ledger matches the wallet', async () => {
@@ -208,6 +219,45 @@ test('one unreadable wallet does not block the others', async () => {
   assert.ok(e.problems.has('callouts'));
   r.w.bad.clear(); await e.poll();
   assert.equal(e.problems.size, 0);
+});
+
+test('calling out again with an update on pump.fun pays again after the cooldown', async () => {
+  const r = rig(); const e = r.make();
+  r.w.treasury = toUnits(1_000_000);
+  const first = r.call('A');
+  await e.poll();
+
+  // A minute later, inside the cooldown and while the first is still holding: recorded and turned away.
+  r.tick(1 * MIN);
+  const early = r.update('A', 1);
+  await e.poll();
+  assert.equal(r.store.callout(early)!.reason, 'cooldown');
+  assert.equal(r.store.callout(first)!.status, 'maturing', 'the first callout is untouched');
+  r.tick(10 * MIN); await e.mature(); await e.payCycle();
+  assert.equal(r.store.callout(first)!.status, 'paid');
+
+  // Past the cooldown: the next update is a new callout and is paid.
+  r.tick(1 * MIN);
+  const again = r.update('A', 2);
+  await e.poll();
+  assert.equal(r.store.callout(again)!.status, 'maturing');
+  r.tick(11 * MIN); await e.mature(); await e.payCycle();
+  assert.equal(r.store.callout(again)!.status, 'paid');
+  assert.equal(r.w.sends, 2, 'the first callout and the update, each paid once');
+  assert.equal(r.store.callout(again)!.callout_id, r.store.callout(first)!.callout_id, 'the update keeps its callout\'s id, for the deleted check');
+  await e.poll(); await e.mature(); await e.payCycle();
+  assert.equal(r.w.sends, 2, 'nothing is paid twice');
+});
+
+test('an update on an old callout deep in the feed is still found', async () => {
+  const r = rig(); const e = r.make();
+  for (let i = 0; i < 60; i++) r.call(`W${i}`);
+  await e.poll();
+  r.tick(15 * MIN);
+  // W0 called out first, so its callout is on the feed's second page, behind 59 already recorded.
+  const u = r.update('W0', 1);
+  await e.poll();
+  assert.ok(r.store.callout(u), 'read past the callouts already recorded');
 });
 
 test('a burst of callouts is read in full', async () => {
@@ -389,6 +439,22 @@ test('pump.fun feed rows are parsed defensively', () => {
   assert.equal(parsePosition({ ...pos, accountKind: 'group' }, mint)!.row!.isGroup, true);
   assert.equal(parsePosition({ ...pos, callout: { ...pos.callout, authorIsDev: true } }, mint)!.row!.isDev, true);
   assert.equal(parsePosition({ ...pos, userId: null }, mint)!.row!.isPumpUser, false);
+
+  // Updates (read with updatesLimit): each is its own event with its own time and text; replies and junk are skipped.
+  const updates = [
+    { id: '3e11c021-ef4d-424e-8e60-255d6200a120', content: 'Dev live!', createdAt: '2026-11-27T17:19:49.223Z', likeCount: 6, parentMessageId: null },
+    { id: 'd0850a56-134b-44e7-b16e-a290dd463e60', content: 'still early', createdAt: '2026-11-27T16:46:21.246Z', likeCount: 1, parentMessageId: null },
+    { id: '1e63d1ac-d30f-44f1-9941-3e9d5c091702', content: 'a reply', createdAt: '2026-11-27T16:50:00.000Z', likeCount: 0, parentMessageId: '3e11c021-ef4d-424e-8e60-255d6200a120' },
+    { id: 'not-a-uuid', content: 'junk', createdAt: '2026-11-27T16:00:00.000Z' },
+  ];
+  const ev = parsePositionEvents({ ...pos, callout: { ...pos.callout, updates } }, mint);
+  assert.equal(ev.length, 3, 'the callout and its two updates');
+  assert.equal(eventKey(ev[0]!.listed), '550edc00-09c5-4e39-a55c-3fbe6f0c8e3b');
+  assert.equal(ev[1]!.listed.key, '550edc00-09c5-4e39-a55c-3fbe6f0c8e3b/3e11c021-ef4d-424e-8e60-255d6200a120');
+  assert.deepEqual([ev[1]!.row!.thesis, ev[1]!.row!.createdAt, ev[1]!.row!.likes, ev[1]!.row!.calloutId], ['Dev live!', Date.parse('2026-11-27T17:19:49.223Z'), 6, '550edc00-09c5-4e39-a55c-3fbe6f0c8e3b']);
+  assert.equal(ev[2]!.row!.followers, 172, 'an update carries the author\'s profile like the callout');
+  assert.equal(toRow(ev[1]!.listed, null).key, ev[1]!.listed.key, 'the key survives the account lookup path');
+  assert.deepEqual(parsePositionEvents({ ...pos, coinMint: 'other' }, mint), []);
 });
 
 test('API responses are parsed defensively', () => {

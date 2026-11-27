@@ -12,9 +12,18 @@ export interface Row {
   calloutId: string; wallet: string; userId: string; username: string; avatar: string | null;
   thesis: string; likes: number; followers: number; accountCreatedAt: number | null; createdAt: number;
   isDev: boolean; isGroup: boolean; isPumpUser: boolean; lowQuality: boolean;
+  /** Set for an update on a callout: `<calloutId>/<updateId>`. Absent for the callout itself. */
+  key?: string;
 }
 /** One callout as gmgn lists it. `calloutId` is pump.fun's own id. */
-export interface Listed { calloutId: string; wallet: string; createdAt: number; thesis: string; likes: number; username: string; avatar: string | null; followers: number }
+export interface Listed { calloutId: string; wallet: string; createdAt: number; thesis: string; likes: number; username: string; avatar: string | null; followers: number; key?: string }
+
+/**
+ * What one reward is for. pump.fun gives a wallet one callout per coin; calling the coin out again means posting an
+ * update on it. Each update is its own event, with its own time and text, and is judged like a new callout (the
+ * per-account cooldown and one-in-line rule still apply). `calloutId` stays the parent callout's id.
+ */
+export const eventKey = (x: { calloutId: string; key?: string }): string => x.key ?? x.calloutId;
 /** The callout as pump.fun has it. `userId` is the pump.fun account, shared by all of one person's wallets. */
 export interface Detail { calloutId: string; wallet: string; userId: string; isDev: boolean; isGroup: boolean; username: string; avatar: string | null }
 export interface Overview { followers: number; isPumpUser: boolean; banned: boolean; isGroup: boolean; username: string; avatar: string | null }
@@ -25,7 +34,7 @@ export type Account = Detail & Pick<Overview, 'followers' | 'isPumpUser' | 'bann
 export interface Fed { listed: Listed; row: Row | null }
 
 export interface Source {
-  /** pump.fun's feed: current holders' callouts, newest first, 50 a page. Throws when pump.fun does not answer. */
+  /** pump.fun's feed: current holders' callouts and their updates, by callout date, 50 holders a page. Throws when pump.fun does not answer. */
   positions(page: number): Promise<{ items: Fed[]; hasMore: boolean }>;
   /** gmgn: every callout on the coin from the last day, newest first; null while gmgn is not answering. */
   callouts(): Promise<Listed[] | null>;
@@ -85,6 +94,27 @@ export function parsePosition(p: any, coinMint: string): Fed | null {
   } : null;
   return { listed, row };
 }
+/**
+ * A position's callout and every update on it that the feed carried (read with updatesLimit, newest first). Each is
+ * its own event: the update's id, time and text, the author's profile as for the callout.
+ */
+export function parsePositionEvents(p: any, coinMint: string): Fed[] {
+  const base = parsePosition(p, coinMint);
+  if (!base) return [];
+  const out: Fed[] = [base];
+  const updates: any[] = Array.isArray(p.callout?.updates) ? p.callout.updates : [];
+  for (const u of updates) {
+    const createdAt = when(u?.createdAt);
+    if (!UUID.test(u?.id ?? '') || !createdAt || u.parentMessageId) continue;
+    const key = `${base.listed.calloutId}/${u.id}`;
+    const thesis = text(u.content, 280), likes = Number(u.likeCount) || 0;
+    out.push({
+      listed: { ...base.listed, key, createdAt, thesis, likes },
+      row: base.row ? { ...base.row, key, createdAt, thesis, likes } : null,
+    });
+  }
+  return out;
+}
 /** pump.fun's `/callout/{id}`. Only trusted when it is the same callout, on this coin, by this wallet. */
 export function parseDetail(body: any, l: Listed, coinMint: string): Detail | null {
   const c = body?.callout;
@@ -114,6 +144,7 @@ export function toRow(l: Listed, a: Account | null): Row {
     calloutId: l.calloutId, wallet: l.wallet, userId: a?.userId ?? l.wallet, username: a?.username || l.username, avatar: a ? a.avatar : l.avatar,
     thesis: l.thesis, likes: l.likes, followers: a?.followers ?? l.followers, accountCreatedAt: null, createdAt: l.createdAt,
     isDev: a?.isDev ?? false, isGroup: a?.isGroup ?? false, isPumpUser: a?.isPumpUser ?? true, lowQuality: a?.banned ?? false,
+    ...(l.key ? { key: l.key } : {}),
   };
 }
 
@@ -203,10 +234,10 @@ export class LiveSource implements Source {
 
   async positions(page: number): Promise<{ items: Fed[]; hasMore: boolean }> {
     try {
-      const q = new URLSearchParams({ sortBy: 'LATEST', withThesis: 'true', includeProfile: 'true', updatesLimit: '0', pageSize: '50', page: String(page) });
+      const q = new URLSearchParams({ sortBy: 'LATEST', withThesis: 'true', includeProfile: 'true', updatesLimit: '10', pageSize: '50', page: String(page) });
       const { body } = await this.get('positions', `${config.pumpFrontendBase}/mint-positions/${this.mint}?${q}`, PUMP);
       if (!Array.isArray(body?.positions)) throw new Error('pump.fun feed: unexpected answer');
-      const items = body.positions.map((p: any) => parsePosition(p, this.mint)).filter((x: Fed | null): x is Fed => x !== null);
+      const items: Fed[] = body.positions.flatMap((p: any) => parsePositionEvents(p, this.mint));
       this.health = { ...this.health, ok: true, note: this.backup ? `live; gmgn backup off (${this.backup})` : 'live' };
       return { items, hasMore: body.hasMore === true && body.positions.length > 0 };
     } catch (e) {
